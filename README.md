@@ -21,7 +21,8 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| [`AGENTS.md`](./AGENTS.md) | AI 与工程开发强制规范（技术栈、红线约束、分阶段任务与标准回报模板） |
+| [`AGENTS.md`](./AGENTS.md) | 妆匣 BeautyBox 长期开发规则（核心原则、数据/隐私规则、开发纪律、环境限制与汇报规范） |
+| [`docs/adr/0001-architecture-decisions.md`](./docs/adr/0001-architecture-decisions.md) | ADR-0001：正式技术架构、iCloud 备份包方案、分享边界、数据库补充、多币种口径与汇报规范决策 |
 | [`docs/01_产品需求设计_V2.0.docx`](./docs/01_%E4%BA%A7%E5%93%81%E9%9C%80%E6%B1%82%E8%AE%BE%E8%AE%A1_V2.0.docx) | V2.0 产品定位、架构决策、业务规则、隐私权限、iCloud 与非目标验收标准 |
 | [`docs/02_数据库设计_V2.0.docx`](./docs/02_%E6%95%B0%E6%8D%AE%E5%BA%93%E8%AE%BE%E8%AE%A1_V2.0.docx) | SQLite 表结构、ER 关系、约束索引、`.beautyboxbackup` 备份格式与迁移策略 |
 | [`docs/03_界面原型说明_V2.0.docx`](./docs/03_%E7%95%8C%E9%9D%A2%E5%8E%9F%E5%9E%8B%E8%AF%B4%E6%98%8E_V2.0.docx) | 五 Tab 信息架构、关键页面字段、弹窗与异常状态、原型验收路径 |
@@ -31,7 +32,7 @@
 
 ## 开发环境与工作流说明
 
-- **目标平台与技术栈**：iOS 原生（Swift + SwiftUI，Feature 模块化 + MVVM + Repository），本地存储优先评估 SQLite + GRDB（或经验证的 SwiftData），内购使用 StoreKit 2。
+- **目标平台与技术栈**：iOS 原生（Swift + SwiftUI，Feature 模块化 + MVVM + Repository），本地数据库确定采用 SQLite + GRDB，内购使用 StoreKit 2，V1 采用用户主动导出/恢复 `.beautyboxbackup` 备份包与图片分享方案。
 - **当前前期开发阶段（Windows / Linux + iPhone）**：
   - 可在本机完成：需求与 ADR 固化、浏览器可点击原型（供 iPhone Safari 测试）、SQLite Schema 与迁移脚本设计、自动化逻辑与数据校验测试、Swift 源码编写。
   - **环境限制**：Windows / Linux 环境无 Apple Xcode、iOS Simulator 与代码签名工具链，无法在本机执行 iOS 工程编译、Archive 打包、StoreKit 沙盒及 iCloud 实测。
