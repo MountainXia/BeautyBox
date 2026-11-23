@@ -3,14 +3,18 @@
  * Tab 3：妆容（妆容记录列表、详情、照片、关联产品实例快照、持妆时间线、白名单分享卡预览）
  */
 
-import { buildCategoryPlaceholderUrl } from '../assets.js';
+import { buildCategoryPlaceholderUrl, getSampleArtworkOptions } from '../assets.js';
 import { todayStr } from '../expiry.js';
 import { isHeldStatus } from '../store.js';
+import { recordDiagnostic } from '../diagnostics.js';
 import {
   esc,
+  formatBytes,
   renderEmptyState,
   renderSamplePickerGrid,
   renderStars,
+  renderUploadPreview,
+  showFormError,
 } from '../components/ui.js';
 
 export function renderLooksView({ store, viewState, ctx }) {
@@ -260,8 +264,17 @@ function renderLookDetail({ store, look, ctx }) {
 export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
   const heldItems = store.state.productItems.filter((i) => !i.archivedAt && isHeldStatus(i.status));
   let pendingFile = null;
+  let pendingPreviewUrl = '';
   let selectedSampleKey = 'sample-look-commute';
   let isDirty = false;
+  const sampleOpts = getSampleArtworkOptions();
+
+  const revokePreview = () => {
+    if (pendingPreviewUrl) {
+      URL.revokeObjectURL(pendingPreviewUrl);
+      pendingPreviewUrl = '';
+    }
+  };
 
   const bodyHtml = `
     <form id="look-form" class="form-stack" novalidate>
@@ -272,7 +285,7 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
         <input class="input" name="name" required placeholder="例如：周末低饱和茶棕妆" />
       </div>
 
-      <div class="field-row">
+      <div class="field-row field-row-mobile-stack">
         <div class="field">
           <label>日期 <span class="req">*</span></label>
           <input class="input" type="date" name="lookDate" value="${todayStr()}" required />
@@ -303,6 +316,7 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
           </label>
           <span id="look-file-name" class="muted-note">已选示例图：早八清透伪素颜</span>
         </div>
+        <div id="look-upload-preview"></div>
         ${renderSamplePickerGrid(selectedSampleKey)}
       </div>
 
@@ -361,6 +375,7 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
   sheet.open({
     title: '新增妆容记录',
     bodyHtml,
+    onClose: revokePreview,
     beforeClose: () => {
       if (!isDirty) return true;
       dialog
@@ -384,23 +399,53 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
       const errBox = body.querySelector('#look-form-error');
       const fileInput = body.querySelector('#look-file-input');
       const fileNameEl = body.querySelector('#look-file-name');
+      const previewWrap = body.querySelector('#look-upload-preview');
+
+      const updateUploadPreview = () => {
+        if (pendingFile && pendingPreviewUrl) {
+          previewWrap.innerHTML = renderUploadPreview({
+            previewUrl: pendingPreviewUrl,
+            title: pendingFile.name || '已选择妆容照片',
+            badgeText: '将作为妆容封面',
+            subtitle: `${formatBytes(pendingFile.size)} · 保存后写入 IndexedDB`,
+          });
+        } else if (selectedSampleKey) {
+          const opt = sampleOpts.find((o) => o.key === selectedSampleKey);
+          previewWrap.innerHTML = opt
+            ? renderUploadPreview({
+                previewUrl: opt.url,
+                title: opt.title,
+                badgeText: '将作为妆容封面',
+                subtitle: '离线示例图',
+              })
+            : '';
+        } else {
+          previewWrap.innerHTML = '';
+        }
+      };
+
+      updateUploadPreview();
 
       form.addEventListener('input', () => {
         isDirty = true;
       });
 
       fileInput?.addEventListener('change', () => {
+        revokePreview();
         pendingFile = fileInput.files?.[0] || null;
         if (pendingFile) {
           selectedSampleKey = '';
+          pendingPreviewUrl = URL.createObjectURL(pendingFile);
           body.querySelectorAll('[data-pick-sample]').forEach((b) => b.classList.remove('is-active'));
           fileNameEl.textContent = `已选：${pendingFile.name}`;
         }
+        updateUploadPreview();
         isDirty = true;
       });
 
       body.querySelectorAll('[data-pick-sample]').forEach((btn) => {
         btn.addEventListener('click', () => {
+          revokePreview();
           const key = btn.dataset.pickSample;
           selectedSampleKey = selectedSampleKey === key ? '' : key;
           pendingFile = null;
@@ -409,6 +454,7 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
           body.querySelectorAll('[data-pick-sample]').forEach((b) => {
             b.classList.toggle('is-active', b.dataset.pickSample === selectedSampleKey);
           });
+          updateUploadPreview();
           isDirty = true;
         });
       });
@@ -439,44 +485,48 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
               assetIds.push(id);
             }
           }
+
+          const checkedItems = [...body.querySelectorAll('input[name="itemIds"]:checked')].map((el) => el.value);
+          const tags = String(fd.get('tags') || '')
+            .split(/[,，]/)
+            .map((t) => t.trim())
+            .filter(Boolean);
+
+          const res = store.saveLook({
+            name: fd.get('name'),
+            lookDate: fd.get('lookDate'),
+            durationMinutes: fd.get('durationMinutes'),
+            style: fd.get('style'),
+            scene: fd.get('scene'),
+            selfRating: fd.get('selfRating'),
+            coordinationRating: fd.get('selfRating'),
+            colorRating: fd.get('selfRating'),
+            wearRating: fd.get('selfRating'),
+            tags,
+            notesPrivate: fd.get('notesPrivate'),
+            assetIds,
+            selectedItems: checkedItems,
+          });
+
+          if (!res.ok) {
+            showFormError(errBox, res.error, toast);
+            return;
+          }
+
+          isDirty = false;
+          close();
+          toast('妆容记录已保存（关联产品已生成快照）');
+          onSaved?.(res.look);
         } catch (err) {
-          errBox.textContent = err.message || '照片处理失败';
-          errBox.style.display = 'block';
-          return;
+          if (!err?.stage) {
+            recordDiagnostic('unexpected_save_error', err, {
+              entityType: 'look',
+              hasFile: Boolean(pendingFile),
+              fileSize: pendingFile?.size || 0,
+            });
+          }
+          showFormError(errBox, err?.message || '保存妆容失败，请在「我的」查看保存诊断日志', toast);
         }
-
-        const checkedItems = [...body.querySelectorAll('input[name="itemIds"]:checked')].map((el) => el.value);
-        const tags = String(fd.get('tags') || '')
-          .split(/[,，]/)
-          .map((t) => t.trim())
-          .filter(Boolean);
-
-        const res = store.saveLook({
-          name: fd.get('name'),
-          lookDate: fd.get('lookDate'),
-          durationMinutes: fd.get('durationMinutes'),
-          style: fd.get('style'),
-          scene: fd.get('scene'),
-          selfRating: fd.get('selfRating'),
-          coordinationRating: fd.get('selfRating'),
-          colorRating: fd.get('selfRating'),
-          wearRating: fd.get('selfRating'),
-          tags,
-          notesPrivate: fd.get('notesPrivate'),
-          assetIds,
-          selectedItems: checkedItems,
-        });
-
-        if (!res.ok) {
-          errBox.textContent = res.error;
-          errBox.style.display = 'block';
-          return;
-        }
-
-        isDirty = false;
-        close();
-        toast('妆容记录已保存（关联产品已生成快照）');
-        onSaved?.(res.look);
       });
     },
   });
@@ -486,6 +536,13 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
 
 function openWearReviewSheet({ store, sheet, toast, lookId, onSaved }) {
   let pendingFile = null;
+  let pendingPreviewUrl = '';
+  const revokePreview = () => {
+    if (pendingPreviewUrl) {
+      URL.revokeObjectURL(pendingPreviewUrl);
+      pendingPreviewUrl = '';
+    }
+  };
   const bodyHtml = `
     <form id="wear-form" class="form-stack" novalidate>
       <div id="wear-form-error" class="form-banner-error" style="display:none;"></div>
@@ -565,6 +622,7 @@ function openWearReviewSheet({ store, sheet, toast, lookId, onSaved }) {
           </label>
           <span id="wear-file-name" class="muted-note">未选择照片</span>
         </div>
+        <div id="wear-upload-preview"></div>
       </div>
 
       <div class="field">
@@ -579,6 +637,7 @@ function openWearReviewSheet({ store, sheet, toast, lookId, onSaved }) {
   sheet.open({
     title: '补充持妆实测',
     bodyHtml,
+    onClose: revokePreview,
     onMount: (body, close) => {
       const tp = body.querySelector('#wear-tp');
       const mins = body.querySelector('#wear-mins');
@@ -588,46 +647,63 @@ function openWearReviewSheet({ store, sheet, toast, lookId, onSaved }) {
       });
 
       const fileEl = body.querySelector('#wear-file');
+      const previewWrap = body.querySelector('#wear-upload-preview');
       fileEl?.addEventListener('change', () => {
+        revokePreview();
         pendingFile = fileEl.files?.[0] || null;
         body.querySelector('#wear-file-name').textContent = pendingFile ? pendingFile.name : '未选择照片';
+        if (pendingFile) {
+          pendingPreviewUrl = URL.createObjectURL(pendingFile);
+          previewWrap.innerHTML = renderUploadPreview({
+            previewUrl: pendingPreviewUrl,
+            title: pendingFile.name || '实测照片',
+            badgeText: '节点实测图',
+            subtitle: `${formatBytes(pendingFile.size)} · 保存后写入 IndexedDB`,
+          });
+        } else {
+          previewWrap.innerHTML = '';
+        }
       });
 
       body.querySelector('#wear-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const errBox = body.querySelector('#wear-form-error');
         errBox.style.display = 'none';
-        let assetId = null;
-        if (pendingFile) {
-          try {
+        try {
+          let assetId = null;
+          if (pendingFile) {
             const asset = await store.addImageFileAsset(pendingFile);
             assetId = asset.id;
-          } catch (err) {
-            errBox.textContent = err.message || '图片保存失败';
-            errBox.style.display = 'block';
+          }
+          const fd = new FormData(e.target);
+          const res = store.addWearReview(lookId, {
+            timepointKey: fd.get('timepointKey'),
+            wearMinutes: fd.get('wearMinutes'),
+            overallRating: fd.get('overallRating'),
+            oilLevel: fd.get('oilLevel'),
+            oxidationLevel: fd.get('oxidationLevel'),
+            makeupLossLevel: fd.get('makeupLossLevel'),
+            cakingLevel: fd.get('cakingLevel'),
+            notesPrivate: fd.get('notesPrivate'),
+            assetId,
+          });
+          if (!res.ok) {
+            showFormError(errBox, res.error, toast);
             return;
           }
+          close();
+          toast('持妆实测节点已保存');
+          onSaved?.();
+        } catch (err) {
+          if (!err?.stage) {
+            recordDiagnostic('unexpected_save_error', err, {
+              entityType: 'wear_review',
+              hasFile: Boolean(pendingFile),
+              fileSize: pendingFile?.size || 0,
+            });
+          }
+          showFormError(errBox, err?.message || '保存持妆记录失败，请在「我的」查看诊断日志', toast);
         }
-        const fd = new FormData(e.target);
-        const res = store.addWearReview(lookId, {
-          timepointKey: fd.get('timepointKey'),
-          wearMinutes: fd.get('wearMinutes'),
-          overallRating: fd.get('overallRating'),
-          oilLevel: fd.get('oilLevel'),
-          oxidationLevel: fd.get('oxidationLevel'),
-          makeupLossLevel: fd.get('makeupLossLevel'),
-          cakingLevel: fd.get('cakingLevel'),
-          notesPrivate: fd.get('notesPrivate'),
-          assetId,
-        });
-        if (!res.ok) {
-          errBox.textContent = res.error;
-          errBox.style.display = 'block';
-          return;
-        }
-        close();
-        toast('持妆实测节点已保存');
-        onSaved?.();
       });
     },
   });

@@ -4,6 +4,11 @@
  */
 
 import { esc, formatBytes } from '../components/ui.js';
+import {
+  clearDiagnostics,
+  formatDiagnosticsText,
+  getDiagnostics,
+} from '../diagnostics.js';
 
 function triggerDownload(filename, content, mimeType) {
   const blob = new Blob([content], { type: mimeType });
@@ -27,6 +32,7 @@ export function renderMeView({ store, ctx }) {
   const mediaStats = store.getMediaStats();
   const sub = SUB_LABELS[store.state.settings.simulatedSubscription] || SUB_LABELS.free;
   const nearDays = store.state.settings.nearExpiryDays;
+  const diagCount = getDiagnostics().length;
 
   ctx.setHeader({
     title: '我的',
@@ -112,6 +118,18 @@ export function renderMeView({ store, ctx }) {
           <div>• <strong>白名单分享</strong>：分享卡片预览默认排除价格、购买渠道、私人备注与肌肤日记。</div>
           <div>• <strong>原生 iOS 能力未在本原型实现（需 Mac/Xcode 与真机实测）</strong>：SQLite + GRDB、<code>isExcludedFromBackup</code> 系统备份排除、PHPicker/相机权限、<code>UIDocumentPicker</code> 与 iCloud Drive、StoreKit 2 沙盒购买与本地通知。</div>
         </div>
+      </div>
+
+      <!-- 保存排查与脱敏诊断日志 -->
+      <div class="card">
+        <div class="section-header">
+          <h2 class="section-title">保存异常诊断日志</h2>
+          <span class="pill ${diagCount > 0 ? 'pill-amber' : 'pill-sage'}">${diagCount} 条记录</span>
+        </div>
+        <div class="muted-note" style="margin-bottom:10px;line-height:1.55;">
+          仅记录保存失败阶段（如 IndexedDB 打开/事务/Blob 写入、localStorage 写入、表单校验）、错误名称与错误消息，绝不记录照片内容、私人备注或日记正文。
+        </div>
+        <button type="button" class="btn btn-secondary btn-block" id="me-view-diag">查看最近保存诊断日志</button>
       </div>
 
       <!-- 重置与清空模拟数据 -->
@@ -223,6 +241,68 @@ export function bindMeEvents(container, { store, actions, sheet, dialog, toast }
           </div>
         </div>
       `,
+    });
+  });
+
+  container.querySelector('#me-view-diag')?.addEventListener('click', () => {
+    const renderDiagBody = () => {
+      const logs = getDiagnostics();
+      if (logs.length === 0) {
+        return `<div class="form-banner-info">暂无保存异常记录。如果在 iPhone Safari 上保存失败，失败阶段与真实报错会自动记录在此处。</div>`;
+      }
+      return `
+        <div class="stack-sm">
+          ${logs
+            .map(
+              (d) => `
+            <div class="card-muted" style="font-size:12px;">
+              <div class="row-between" style="margin-bottom:4px;">
+                <span class="pill pill-amber">${esc(d.stage)}</span>
+                <span class="muted-note">${esc(d.timestamp.slice(0, 19).replace('T', ' '))}</span>
+              </div>
+              <div style="font-weight:700;">${esc(d.stageLabel)}</div>
+              <div style="margin-top:3px;color:var(--danger);word-break:break-word;">${esc(d.errorName)}: ${esc(d.errorMessage)}</div>
+              <div class="muted-note" style="margin-top:3px;font-family:var(--font-mono);">${esc(JSON.stringify(d.context))}</div>
+            </div>
+          `,
+            )
+            .join('')}
+        </div>
+      `;
+    };
+
+    sheet.open({
+      title: '保存异常诊断日志（脱敏）',
+      bodyHtml: `
+        <div class="stack">
+          <div class="field-row">
+            <button type="button" class="btn btn-soft btn-sm" id="diag-copy-btn">复制脱敏日志</button>
+            <button type="button" class="btn btn-danger btn-sm" id="diag-clear-btn">清空诊断日志</button>
+          </div>
+          <div id="diag-list-wrap">${renderDiagBody()}</div>
+        </div>
+      `,
+      onMount: (body) => {
+        body.querySelector('#diag-copy-btn')?.addEventListener('click', async () => {
+          const text = formatDiagnosticsText();
+          if (navigator.clipboard?.writeText) {
+            try {
+              await navigator.clipboard.writeText(text);
+              toast('已复制诊断日志（不含隐私内容）');
+              return;
+            } catch {
+              // fallback
+            }
+          }
+          toast('请直接截图当前列表或手动选中复制');
+        });
+        body.querySelector('#diag-clear-btn')?.addEventListener('click', () => {
+          clearDiagnostics();
+          body.querySelector('#diag-list-wrap').innerHTML = renderDiagBody();
+          toast('已清空诊断日志');
+          actions.rerender();
+        });
+      },
     });
   });
 

@@ -53,14 +53,77 @@ export function renderEmptyState({ icon = '✦', title, desc, actionLabel = '', 
   `;
 }
 
+let activeModalCount = 0;
+
+function syncVisualViewport() {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+  if (vv) {
+    root.style.setProperty('--vv-height', `${Math.round(vv.height)}px`);
+    root.style.setProperty('--vv-offset-top', `${Math.round(vv.offsetTop)}px`);
+  } else if (typeof window !== 'undefined') {
+    root.style.setProperty('--vv-height', `${window.innerHeight}px`);
+    root.style.setProperty('--vv-offset-top', '0px');
+  }
+}
+
+function setModalLock(open) {
+  if (typeof document === 'undefined') return;
+  activeModalCount = Math.max(0, activeModalCount + (open ? 1 : -1));
+  document.documentElement.classList.toggle('has-modal-open', activeModalCount > 0);
+  if (activeModalCount > 0) {
+    syncVisualViewport();
+  }
+}
+
+if (typeof window !== 'undefined' && window.visualViewport) {
+  window.visualViewport.addEventListener('resize', syncVisualViewport);
+  window.visualViewport.addEventListener('scroll', syncVisualViewport);
+}
+
+/** 统一展示表单错误横幅并滚动到可见位置，绝不吞掉或隐藏失败提示 */
+export function showFormError(errEl, msg, toast = null) {
+  if (errEl) {
+    errEl.textContent = msg;
+    errEl.style.display = 'block';
+    if (typeof errEl.scrollIntoView === 'function') {
+      errEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }
+  if (typeof toast === 'function') {
+    toast(msg);
+  }
+}
+
+export function renderUploadPreview({ previewUrl, title, badgeText = '', subtitle = '' }) {
+  if (!previewUrl) return '';
+  return `
+    <div class="upload-preview-box">
+      <img class="upload-preview-thumb" src="${esc(previewUrl)}" alt="${esc(title || '预览缩略图')}" />
+      <div style="min-width:0;flex:1;">
+        <div class="row-wrap" style="gap:6px;">
+          ${badgeText ? `<span class="pill pill-accent">${esc(badgeText)}</span>` : ''}
+          <span style="font-size:13px;font-weight:600;word-break:break-word;">${esc(title || '已选择图片')}</span>
+        </div>
+        ${subtitle ? `<div class="muted-note" style="margin-top:3px;">${esc(subtitle)}</div>` : ''}
+      </div>
+    </div>
+  `;
+}
+
 /** 底部 Sheet 控制器 */
 export function createSheetManager(rootEl) {
   let closeHandler = null;
+  let isOpen = false;
 
   function close() {
+    if (!isOpen && !rootEl.innerHTML) return;
+    isOpen = false;
     rootEl.innerHTML = '';
     rootEl.classList.remove('is-open');
     rootEl.setAttribute('aria-hidden', 'true');
+    setModalLock(false);
     if (closeHandler) {
       const fn = closeHandler;
       closeHandler = null;
@@ -69,7 +132,9 @@ export function createSheetManager(rootEl) {
   }
 
   function open({ title, bodyHtml, onMount, onClose, beforeClose }) {
+    const wasOpen = isOpen;
     closeHandler = onClose || null;
+    isOpen = true;
     rootEl.innerHTML = `
       <div class="sheet-backdrop" data-sheet-backdrop="1">
         <div class="sheet-panel" role="dialog" aria-modal="true" aria-label="${esc(title)}">
@@ -83,6 +148,8 @@ export function createSheetManager(rootEl) {
     `;
     rootEl.classList.add('is-open');
     rootEl.setAttribute('aria-hidden', 'false');
+    if (!wasOpen) setModalLock(true);
+    else syncVisualViewport();
 
     const tryClose = () => {
       if (typeof beforeClose === 'function' && beforeClose(rootEl) === false) return;
@@ -104,14 +171,21 @@ export function createSheetManager(rootEl) {
 
 /** 确认弹窗控制器 */
 export function createDialogManager(rootEl) {
+  let isOpen = false;
+
   function close() {
+    if (!isOpen && !rootEl.innerHTML) return;
+    isOpen = false;
     rootEl.innerHTML = '';
     rootEl.classList.remove('is-open');
     rootEl.setAttribute('aria-hidden', 'true');
+    setModalLock(false);
   }
 
   function confirm({ title, message, confirmLabel = '确认', cancelLabel = '取消', danger = false }) {
     return new Promise((resolve) => {
+      const wasOpen = isOpen;
+      isOpen = true;
       rootEl.innerHTML = `
         <div class="dialog-backdrop">
           <div class="dialog-panel" role="alertdialog" aria-modal="true">
@@ -126,6 +200,8 @@ export function createDialogManager(rootEl) {
       `;
       rootEl.classList.add('is-open');
       rootEl.setAttribute('aria-hidden', 'false');
+      if (!wasOpen) setModalLock(true);
+      else syncVisualViewport();
       rootEl.querySelector('[data-dlg-cancel]')?.addEventListener('click', () => {
         close();
         resolve(false);

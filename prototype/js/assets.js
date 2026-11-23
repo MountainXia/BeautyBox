@@ -9,44 +9,156 @@
  * - 清空模拟数据时调用 clearAllMediaBlobs() 同步清理 IndexedDB
  */
 
+import { PrototypeSaveError, recordDiagnostic } from './diagnostics.js';
+
 const IDB_NAME = 'beautybox_prototype_media';
 const IDB_VERSION = 1;
 const STORE_NAME = 'blobs';
+const IMAGE_EXT_RE = /\.(jpe?g|png|webp|gif|heic|heif|bmp|avif)$/i;
 
 const objectUrlCache = new Map();
 let dbPromise = null;
 
 function openMediaDb() {
   if (typeof indexedDB === 'undefined') {
-    return Promise.reject(new Error('当前环境不支持 IndexedDB'));
+    const err = new PrototypeSaveError('idb_open_failed', new Error('当前浏览器环境不支持 IndexedDB'));
+    recordDiagnostic('idb_open_failed', err, { storageMode: 'indexeddb' });
+    return Promise.reject(err);
   }
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    let req;
+    try {
+      req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    } catch (e) {
+      dbPromise = null;
+      const err = new PrototypeSaveError('idb_open_failed', e);
+      recordDiagnostic('idb_open_failed', err, { storageMode: 'indexeddb' });
+      reject(err);
+      return;
+    }
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME, { keyPath: 'id' });
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error || new Error('无法打开 IndexedDB'));
+    req.onblocked = () => {
+      dbPromise = null;
+      const err = new PrototypeSaveError('idb_open_failed', new Error('IndexedDB 打开被其他标签页阻塞'));
+      recordDiagnostic('idb_open_failed', err, { storageMode: 'indexeddb' });
+      reject(err);
+    };
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      db.onclose = () => {
+        dbPromise = null;
+      };
+      resolve(db);
+    };
+    req.onerror = () => {
+      dbPromise = null;
+      const err = new PrototypeSaveError('idb_open_failed', req.error || new Error('无法打开 IndexedDB'));
+      recordDiagnostic('idb_open_failed', err, { storageMode: 'indexeddb' });
+      reject(err);
+    };
   });
   return dbPromise;
 }
 
-export async function saveMediaBlob(id, blob) {
+/**
+ * 将 File/Blob 转为独立 Blob，避免 iOS Safari 在经过异步步骤或文件选择器切换后 File 句柄失效。
+ */
+async function stabilizeBlob(fileOrBlob) {
+  if (!fileOrBlob) {
+    throw new PrototypeSaveError('file_read_failed', new Error('未获取到有效图片对象'));
+  }
+  if (typeof fileOrBlob.arrayBuffer === 'function') {
+    try {
+      const buf = await fileOrBlob.arrayBuffer();
+      const type = fileOrBlob.type || inferMimeFromName(fileOrBlob.name) || 'image/jpeg';
+      return new Blob([buf], { type });
+    } catch (e) {
+      throw new PrototypeSaveError('file_read_failed', e);
+    }
+  }
+  return fileOrBlob;
+}
+
+function inferMimeFromName(name = '') {
+  const lower = String(name).toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.heic') || lower.endsWith('.heif')) return 'image/heic';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  return '';
+}
+
+export async function saveMediaBlob(id, fileOrBlob) {
+  let stableBlob;
+  try {
+    stableBlob = await stabilizeBlob(fileOrBlob);
+  } catch (err) {
+    recordDiagnostic(err.stage || 'file_read_failed', err, {
+      fileType: fileOrBlob?.type || '',
+      fileSize: fileOrBlob?.size || 0,
+    });
+    throw err;
+  }
+
   const db = await openMediaDb();
   await new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).put({ id, blob, updatedAt: new Date().toISOString() });
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error || new Error('写入图片 Blob 失败'));
+    let tx;
+    let putReq;
+    try {
+      tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      putReq = store.put({ id, blob: stableBlob, updatedAt: new Date().toISOString() });
+    } catch (e) {
+      const err = new PrototypeSaveError('idb_tx_failed', e);
+      recordDiagnostic('idb_tx_failed', err, { fileSize: stableBlob.size || 0 });
+      reject(err);
+      return;
+    }
+
+    let settled = false;
+    putReq.onerror = () => {
+      if (settled) return;
+      settled = true;
+      const err = new PrototypeSaveError('idb_blob_write_failed', putReq.error || new Error('写入图片 Blob 失败'));
+      recordDiagnostic('idb_blob_write_failed', err, { fileSize: stableBlob.size || 0, fileType: stableBlob.type || '' });
+      reject(err);
+    };
+    tx.onabort = () => {
+      if (settled) return;
+      settled = true;
+      const err = new PrototypeSaveError('idb_tx_failed', tx.error || new Error('IndexedDB 写入事务中止'));
+      recordDiagnostic('idb_tx_failed', err, { fileSize: stableBlob.size || 0 });
+      reject(err);
+    };
+    tx.onerror = () => {
+      if (settled) return;
+      settled = true;
+      const err = new PrototypeSaveError('idb_tx_failed', tx.error || new Error('IndexedDB 事务错误'));
+      recordDiagnostic('idb_tx_failed', err, { fileSize: stableBlob.size || 0 });
+      reject(err);
+    };
+    tx.oncomplete = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
   });
+
   if (objectUrlCache.has(id)) {
     URL.revokeObjectURL(objectUrlCache.get(id));
   }
-  const url = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(stableBlob);
   objectUrlCache.set(id, url);
   return url;
 }
@@ -145,10 +257,12 @@ export function readImageDimensions(file) {
   });
 }
 
-/** 校验用户选择的文件（必须是图片，限制单张 15MB 防止浏览器内存溢出） */
+/** 校验用户选择的文件（兼容部分 iOS Safari 文件选择器 MIME 为空但文件名后缀为图片的情况，限制单张 15MB） */
 export function validateImageFile(file) {
   if (!file) return '未选择图片文件';
-  if (!file.type || !file.type.startsWith('image/')) {
+  const hasImageMime = typeof file.type === 'string' && file.type.startsWith('image/');
+  const hasImageExt = typeof file.name === 'string' && IMAGE_EXT_RE.test(file.name);
+  if (!hasImageMime && !hasImageExt) {
     return '请选择有效的图片文件（JPG / PNG / HEIC / WebP）';
   }
   if (file.size > 15 * 1024 * 1024) {

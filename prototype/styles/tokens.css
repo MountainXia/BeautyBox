@@ -88,7 +88,7 @@ img {
   max-width: 100%;
 }
 
-/* 外壳容器：移动端全屏，桌面端居中 iOS 视口（可切宽屏） */
+/* 外壳容器：移动端固定 100dvh 内部滚动（锁定顶部/底部安全区与弹窗视口），桌面端居中 iOS 视口 */
 .app-shell {
   min-height: 100dvh;
   display: flex;
@@ -103,9 +103,23 @@ img {
   flex: 1;
   display: flex;
   flex-direction: column;
+  height: 100dvh;
   min-height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
   background: var(--bg-page);
   position: relative;
+}
+
+html.has-modal-open,
+html.has-modal-open body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+html.has-modal-open .app-main {
+  overflow: hidden;
+  touch-action: none;
 }
 
 @media (min-width: 768px) {

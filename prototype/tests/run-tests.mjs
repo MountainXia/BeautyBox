@@ -25,6 +25,8 @@ import {
   resolveExpiry,
 } from '../js/expiry.js';
 import { PrototypeStore, STORAGE_KEY } from '../js/store.js';
+import { validateImageFile } from '../js/assets.js';
+import { clearDiagnostics, getDiagnostics } from '../js/diagnostics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTOTYPE_DIR = path.resolve(__dirname, '..');
@@ -247,4 +249,39 @@ test('首页统计口径、单封面唯一真相源、历史快照保护与清�
   assert.equal(mediaOps.clearCount, 1);
   assert.equal(store.state.products.length, 0);
   assert.equal(store.state.mediaAssets.length, 0);
+});
+
+test('TASK02.1-A：Safari 空 MIME 图片校验、localStorage 失败回滚与脱敏诊断日志', () => {
+  clearDiagnostics();
+  // iOS Safari 部分图片选择 MIME 为空但文件名后缀为 .heic / .jpg
+  assert.equal(validateImageFile({ name: 'IMG_001.HEIC', type: '', size: 2048 }), null);
+  assert.notEqual(validateImageFile({ name: 'doc.pdf', type: 'application/pdf', size: 1024 }), null);
+
+  // 模拟 localStorage 写入失败（如无痕模式 / 配额超限）
+  const storage = createMemoryStorage();
+  const store = new PrototypeStore({ storage, mediaOps: createFakeMediaOps() });
+  const initialCount = store.state.products.length;
+
+  storage.setItem = () => {
+    const err = new Error('Quota exceeded');
+    err.name = 'QuotaExceededError';
+    throw err;
+  };
+
+  const failRes = store.saveProduct({
+    name: '测试回滚产品',
+    categoryId: 'cat-base',
+    notesPrivate: '绝对不应该进诊断日志的私人备注',
+  });
+  assert.equal(failRes.ok, false);
+  assert.equal(failRes.stage, 'localstorage_write_failed');
+  // 失败后内存状态必须回滚，不能假装已保存
+  assert.equal(store.state.products.length, initialCount);
+
+  const logs = getDiagnostics();
+  assert.ok(logs.length >= 1);
+  assert.equal(logs[0].stage, 'localstorage_write_failed');
+  assert.equal(logs[0].errorName, 'QuotaExceededError');
+  assert.equal(JSON.stringify(logs[0]).includes('绝对不应该进诊断日志的私人备注'), false);
+  clearDiagnostics();
 });

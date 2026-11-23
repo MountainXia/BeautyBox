@@ -37,6 +37,7 @@ import {
   validateImageFile,
 } from './assets.js';
 import { createSeedData } from './seedData.js';
+import { PrototypeSaveError, recordDiagnostic } from './diagnostics.js';
 
 export const STORAGE_KEY = 'beautybox_prototype_v1';
 
@@ -142,14 +143,50 @@ export class PrototypeStore {
     return seed;
   }
 
-  saveRawState(state) {
+  saveRawState(state, entityType = 'state') {
     if (!this.storage) return;
-    this.storage.setItem(STORAGE_KEY, JSON.stringify(state));
+    try {
+      this.storage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (e) {
+      const err = new PrototypeSaveError(
+        'localstorage_write_failed',
+        e,
+        `本地存储写入失败（${e?.name || 'StorageError'}: ${e?.message || '可能是无痕模式或存储空间不足'}）`,
+      );
+      recordDiagnostic('localstorage_write_failed', err, { entityType, storageMode: 'localStorage' });
+      throw err;
+    }
   }
 
-  persist() {
-    this.saveRawState(this.state);
+  persist(entityType = 'state') {
+    this.saveRawState(this.state, entityType);
     this.notify();
+  }
+
+  failValidation(entityType, field, error) {
+    recordDiagnostic('form_validation_failed', new Error(error), { entityType, field });
+    return { ok: false, stage: 'form_validation_failed', error };
+  }
+
+  runPersistMutation(entityType, mutator) {
+    const snapshotJson = JSON.stringify(this.state);
+    try {
+      const result = mutator();
+      this.persist(entityType);
+      return result;
+    } catch (e) {
+      this.state = JSON.parse(snapshotJson);
+      const stage = e?.stage || 'unexpected_save_error';
+      if (!e?.stage) {
+        recordDiagnostic(stage, e, { entityType });
+      }
+      return {
+        ok: false,
+        stage,
+        errorName: e?.originalName || e?.name || 'Error',
+        error: e?.message || '保存失败，请查看诊断日志',
+      };
+    }
   }
 
   async hydrateMedia() {
@@ -158,13 +195,21 @@ export class PrototypeStore {
     return res;
   }
 
-  /** 将用户选择的文件保存为 IndexedDB Blob，并登记元数据 */
+  /** 将用户选择的文件保存为 IndexedDB Blob，并登记元数据（区分各阶段异常，绝不吞错） */
   async addImageFileAsset(file) {
     const err = this.mediaOps.validateFile(file);
-    if (err) throw new Error(err);
+    if (err) {
+      recordDiagnostic('form_validation_failed', new Error(err), {
+        entityType: 'media_asset',
+        field: 'imageFile',
+        fileType: file?.type || '',
+        fileSize: file?.size || 0,
+      });
+      throw new PrototypeSaveError('form_validation_failed', new Error(err), err);
+    }
     const id = uid('asset');
-    const dims = await this.mediaOps.readDimensions(file);
     await this.mediaOps.saveBlob(id, file);
+    const dims = await this.mediaOps.readDimensions(file).catch(() => ({ width: 0, height: 0 }));
     const asset = {
       id,
       kind: 'idb',
@@ -174,8 +219,15 @@ export class PrototypeStore {
       height: dims.height || 0,
       createdAt: new Date().toISOString(),
     };
+    const prevAssets = [...this.state.mediaAssets];
     this.state.mediaAssets.push(asset);
-    this.persist();
+    try {
+      this.persist('media_asset');
+    } catch (persistErr) {
+      this.state.mediaAssets = prevAssets;
+      await this.mediaOps.deleteBlob(id).catch(() => {});
+      throw persistErr;
+    }
     return asset;
   }
 
@@ -315,53 +367,53 @@ export class PrototypeStore {
   saveProduct(input) {
     const name = (input.name || '').trim();
     const categoryId = (input.categoryId || '').trim();
-    if (!name) return { ok: false, error: '请填写产品名称' };
+    if (!name) return this.failValidation('product', 'name', '请填写产品名称');
     if (!categoryId || !this.state.categories.some((c) => c.id === categoryId)) {
-      return { ok: false, error: '请选择产品分类' };
+      return this.failValidation('product', 'categoryId', '请选择产品分类');
     }
 
-    const now = new Date().toISOString();
-    const brandId = this.ensureBrandId(input.brandName || '');
+    return this.runPersistMutation('product', () => {
+      const now = new Date().toISOString();
+      const brandId = this.ensureBrandId(input.brandName || '');
 
-    if (input.id) {
-      const existing = this.state.products.find((p) => p.id === input.id);
-      if (!existing) return { ok: false, error: '未找到要编辑的产品' };
-      existing.name = name;
-      existing.categoryId = categoryId;
-      existing.brandId = brandId;
-      existing.specification = (input.specification || '').trim();
-      existing.shade = (input.shade || '').trim();
-      existing.texture = (input.texture || '').trim();
-      existing.finish = (input.finish || '').trim();
-      existing.notesPrivate = (input.notesPrivate || '').trim();
-      existing.updatedAt = now;
-      if (input.newAssetId) {
-        this.addProductPhoto(existing.id, input.newAssetId, { makeCover: Boolean(input.makeNewPhotoCover) });
+      if (input.id) {
+        const existing = this.state.products.find((p) => p.id === input.id);
+        if (!existing) return { ok: false, error: '未找到要编辑的产品' };
+        existing.name = name;
+        existing.categoryId = categoryId;
+        existing.brandId = brandId;
+        existing.specification = (input.specification || '').trim();
+        existing.shade = (input.shade || '').trim();
+        existing.texture = (input.texture || '').trim();
+        existing.finish = (input.finish || '').trim();
+        existing.notesPrivate = (input.notesPrivate || '').trim();
+        existing.updatedAt = now;
+        if (input.newAssetId) {
+          this.addProductPhoto(existing.id, input.newAssetId, { makeCover: Boolean(input.makeNewPhotoCover) });
+        }
+        return { ok: true, product: existing };
       }
-      this.persist();
-      return { ok: true, product: existing };
-    }
 
-    const product = {
-      id: uid('prod'),
-      brandId,
-      categoryId,
-      name,
-      specification: (input.specification || '').trim(),
-      shade: (input.shade || '').trim(),
-      texture: (input.texture || '').trim(),
-      finish: (input.finish || '').trim(),
-      notesPrivate: (input.notesPrivate || '').trim(),
-      createdAt: now,
-      updatedAt: now,
-      archivedAt: null,
-    };
-    this.state.products.push(product);
-    if (input.newAssetId) {
-      this.addProductPhoto(product.id, input.newAssetId, { makeCover: true });
-    }
-    this.persist();
-    return { ok: true, product };
+      const product = {
+        id: uid('prod'),
+        brandId,
+        categoryId,
+        name,
+        specification: (input.specification || '').trim(),
+        shade: (input.shade || '').trim(),
+        texture: (input.texture || '').trim(),
+        finish: (input.finish || '').trim(),
+        notesPrivate: (input.notesPrivate || '').trim(),
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+      };
+      this.state.products.push(product);
+      if (input.newAssetId) {
+        this.addProductPhoto(product.id, input.newAssetId, { makeCover: true });
+      }
+      return { ok: true, product };
+    });
   }
 
   toggleArchiveProduct(productId) {
@@ -392,10 +444,10 @@ export class PrototypeStore {
    */
   saveProductItem(input) {
     const product = this.state.products.find((p) => p.id === input.productId);
-    if (!product) return { ok: false, error: '所属产品不存在' };
+    if (!product) return this.failValidation('product_item', 'productId', '所属产品不存在');
 
     const status = input.status || 'in_use';
-    if (!ITEM_STATUSES[status]) return { ok: false, error: '请选择有效的持有状态' };
+    if (!ITEM_STATUSES[status]) return this.failValidation('product_item', 'status', '请选择有效的持有状态');
 
     let purchasePriceMinor = null;
     let currencyCode = null;
@@ -403,99 +455,101 @@ export class PrototypeStore {
     const selectedCode = (input.currencyCode || '').trim();
 
     if (priceInput !== '' || (selectedCode !== '' && !isSupportedCurrency(selectedCode))) {
-      if (!selectedCode) return { ok: false, error: '请选择购买币种' };
+      if (!selectedCode) return this.failValidation('product_item', 'currencyCode', '请选择购买币种');
       if (!isSupportedCurrency(selectedCode)) {
-        return { ok: false, error: UNSUPPORTED_MESSAGE };
+        return this.failValidation('product_item', 'currencyCode', UNSUPPORTED_MESSAGE);
       }
       const parsed = parseAmountToMinor(priceInput, selectedCode);
-      if (!parsed.ok) return { ok: false, error: parsed.error };
+      if (!parsed.ok) return this.failValidation('product_item', 'purchasePriceInput', parsed.error);
       purchasePriceMinor = parsed.minor;
       currencyCode = parsed.currencyCode;
     } else if (selectedCode !== '') {
-      if (!isSupportedCurrency(selectedCode)) return { ok: false, error: UNSUPPORTED_MESSAGE };
+      if (!isSupportedCurrency(selectedCode)) return this.failValidation('product_item', 'currencyCode', UNSUPPORTED_MESSAGE);
       currencyCode = selectedCode;
     }
 
-    const checkDate = (val, label) => {
+    const checkDate = (val, field, label) => {
       const s = (val || '').trim();
       if (!s) return { ok: true, value: null };
-      if (!isValidDate(s)) return { ok: false, error: `${label}格式应为 YYYY-MM-DD` };
+      if (!isValidDate(s)) return this.failValidation('product_item', field, `${label}格式应为 YYYY-MM-DD`);
       return { ok: true, value: s };
     };
-    const checkMonths = (val, label) => {
+    const checkMonths = (val, field, label) => {
       const s = String(val ?? '').trim();
       if (!s) return { ok: true, value: null };
-      if (!/^\d+$/.test(s)) return { ok: false, error: `${label}必须为正整数月数` };
+      if (!/^\d+$/.test(s)) return this.failValidation('product_item', field, `${label}必须为正整数月数`);
       const n = Number.parseInt(s, 10);
-      if (!isPositiveIntMonths(n)) return { ok: false, error: `${label}必须大于 0 个月` };
+      if (!isPositiveIntMonths(n)) return this.failValidation('product_item', field, `${label}必须大于 0 个月`);
       return { ok: true, value: n };
     };
 
-    const pd = checkDate(input.purchaseDate, '购买日期');
+    const pd = checkDate(input.purchaseDate, 'purchaseDate', '购买日期');
     if (!pd.ok) return pd;
-    const md = checkDate(input.manufactureDate, '生产日期');
+    const md = checkDate(input.manufactureDate, 'manufactureDate', '生产日期');
     if (!md.ok) return md;
-    const od = checkDate(input.openedDate, '开封日期');
+    const od = checkDate(input.openedDate, 'openedDate', '开封日期');
     if (!od.ok) return od;
-    const cd = checkDate(input.confirmedExpiryDate, '用户确认到期日');
+    const cd = checkDate(input.confirmedExpiryDate, 'confirmedExpiryDate', '用户确认到期日');
     if (!cd.ok) return cd;
-    const sm = checkMonths(input.unopenedShelfMonths, '未开封保质期');
+    const sm = checkMonths(input.unopenedShelfMonths, 'unopenedShelfMonths', '未开封保质期');
     if (!sm.ok) return sm;
-    const pm = checkMonths(input.paoMonths, '开封后使用期限（PAO）');
+    const pm = checkMonths(input.paoMonths, 'paoMonths', '开封后使用期限（PAO）');
     if (!pm.ok) return pm;
 
     const remRaw = input.remainingPercent === '' || input.remainingPercent === null || input.remainingPercent === undefined
       ? 100
       : Number.parseInt(String(input.remainingPercent), 10);
     if (!Number.isInteger(remRaw) || remRaw < 0 || remRaw > 100) {
-      return { ok: false, error: '剩余比例必须在 0 到 100 之间' };
+      return this.failValidation('product_item', 'remainingPercent', '剩余比例必须在 0 到 100 之间');
     }
 
     const prev = input.id ? this.state.productItems.find((i) => i.id === input.id) : null;
-    if (input.id && !prev) return { ok: false, error: '未找到要编辑的持有实例' };
+    if (input.id && !prev) return this.failValidation('product_item', 'id', '未找到要编辑的持有实例');
 
-    const now = new Date().toISOString();
-    const draftDates = {
-      manufactureDate: md.value,
-      unopenedShelfMonths: sm.value,
-      openedDate: od.value,
-      paoMonths: pm.value,
-      confirmedExpiryDate: cd.value,
-    };
-    const computed = deriveComputedExpiry(draftDates);
-    const confirmation = applyExpiryConfirmation(prev, draftDates, now);
+    return this.runPersistMutation('product_item', () => {
+      const targetPrev = input.id ? this.state.productItems.find((i) => i.id === input.id) : null;
+      const now = new Date().toISOString();
+      const draftDates = {
+        manufactureDate: md.value,
+        unopenedShelfMonths: sm.value,
+        openedDate: od.value,
+        paoMonths: pm.value,
+        confirmedExpiryDate: cd.value,
+      };
+      const computed = deriveComputedExpiry(draftDates);
+      const confirmation = applyExpiryConfirmation(targetPrev, draftDates, now);
 
-    const record = {
-      id: prev ? prev.id : uid('item'),
-      productId: product.id,
-      purchasePriceMinor,
-      currencyCode,
-      purchaseDate: pd.value,
-      purchaseChannel: (input.purchaseChannel || '').trim(),
-      manufactureDate: md.value,
-      unopenedShelfMonths: sm.value,
-      openedDate: od.value,
-      paoMonths: pm.value,
-      computedExpiryDate: computed.computedExpiryDate,
-      expiryBasis: computed.expiryBasis,
-      confirmedExpiryDate: confirmation.confirmedExpiryDate,
-      expiryConfirmedAt: confirmation.expiryConfirmedAt,
-      expiryNeedsReconfirm: confirmation.expiryNeedsReconfirm,
-      status,
-      remainingPercent: status === 'used_up' ? 0 : remRaw,
-      lastUsedAt: prev ? prev.lastUsedAt : null,
-      createdAt: prev ? prev.createdAt : now,
-      updatedAt: now,
-      archivedAt: input.archivedAt !== undefined ? input.archivedAt : (prev ? prev.archivedAt : null),
-    };
+      const record = {
+        id: targetPrev ? targetPrev.id : uid('item'),
+        productId: product.id,
+        purchasePriceMinor,
+        currencyCode,
+        purchaseDate: pd.value,
+        purchaseChannel: (input.purchaseChannel || '').trim(),
+        manufactureDate: md.value,
+        unopenedShelfMonths: sm.value,
+        openedDate: od.value,
+        paoMonths: pm.value,
+        computedExpiryDate: computed.computedExpiryDate,
+        expiryBasis: computed.expiryBasis,
+        confirmedExpiryDate: confirmation.confirmedExpiryDate,
+        expiryConfirmedAt: confirmation.expiryConfirmedAt,
+        expiryNeedsReconfirm: confirmation.expiryNeedsReconfirm,
+        status,
+        remainingPercent: status === 'used_up' ? 0 : remRaw,
+        lastUsedAt: targetPrev ? targetPrev.lastUsedAt : null,
+        createdAt: targetPrev ? targetPrev.createdAt : now,
+        updatedAt: now,
+        archivedAt: input.archivedAt !== undefined ? input.archivedAt : (targetPrev ? targetPrev.archivedAt : null),
+      };
 
-    if (prev) {
-      Object.assign(prev, record);
-    } else {
-      this.state.productItems.push(record);
-    }
-    this.persist();
-    return { ok: true, item: record };
+      if (targetPrev) {
+        Object.assign(targetPrev, record);
+      } else {
+        this.state.productItems.push(record);
+      }
+      return { ok: true, item: record };
+    });
   }
 
   archiveProductItem(itemId) {
@@ -556,265 +610,276 @@ export class PrototypeStore {
   saveLook(input) {
     const name = (input.name || '').trim();
     const lookDate = (input.lookDate || '').trim();
-    if (!name) return { ok: false, error: '请填写妆容名称' };
-    if (!isValidDate(lookDate)) return { ok: false, error: '请选择有效的妆容日期' };
+    if (!name) return this.failValidation('look', 'name', '请填写妆容名称');
+    if (!isValidDate(lookDate)) return this.failValidation('look', 'lookDate', '请选择有效的妆容日期');
     const dur = input.durationMinutes === '' || input.durationMinutes === null || input.durationMinutes === undefined
       ? null
       : Number.parseInt(String(input.durationMinutes), 10);
     if (dur !== null && (!Number.isInteger(dur) || dur < 0)) {
-      return { ok: false, error: '耗时必须是非负整数分钟' };
+      return this.failValidation('look', 'durationMinutes', '耗时必须是非负整数分钟');
     }
 
-    const now = new Date().toISOString();
-    const assetIds = Array.isArray(input.assetIds) ? input.assetIds.filter(Boolean) : [];
-    const coverAssetId = assetIds[0] || null;
+    return this.runPersistMutation('look', () => {
+      const now = new Date().toISOString();
+      const assetIds = Array.isArray(input.assetIds) ? input.assetIds.filter(Boolean) : [];
+      const coverAssetId = assetIds[0] || null;
 
-    const lookId = input.id || uid('look');
-    const look = {
-      id: lookId,
-      name,
-      lookDate,
-      style: (input.style || '').trim(),
-      scene: (input.scene || '').trim(),
-      durationMinutes: dur,
-      coverAssetId,
-      selfRating: Number(input.selfRating) || 5,
-      coordinationRating: Number(input.coordinationRating) || 5,
-      colorRating: Number(input.colorRating) || 5,
-      wearRating: Number(input.wearRating) || 5,
-      tags: Array.isArray(input.tags) ? input.tags : [],
-      notesPrivate: (input.notesPrivate || '').trim(),
-      createdAt: now,
-      updatedAt: now,
-      archivedAt: null,
-    };
+      const lookId = input.id || uid('look');
+      const look = {
+        id: lookId,
+        name,
+        lookDate,
+        style: (input.style || '').trim(),
+        scene: (input.scene || '').trim(),
+        durationMinutes: dur,
+        coverAssetId,
+        selfRating: Number(input.selfRating) || 5,
+        coordinationRating: Number(input.coordinationRating) || 5,
+        colorRating: Number(input.colorRating) || 5,
+        wearRating: Number(input.wearRating) || 5,
+        tags: Array.isArray(input.tags) ? input.tags : [],
+        notesPrivate: (input.notesPrivate || '').trim(),
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+      };
 
-    if (input.id) {
-      const existing = this.state.looks.find((l) => l.id === input.id);
-      if (!existing) return { ok: false, error: '妆容不存在' };
-      Object.assign(existing, look, { createdAt: existing.createdAt });
-      this.state.lookPhotos = this.state.lookPhotos.filter((lp) => lp.lookId !== lookId);
-      this.state.lookProductItems = this.state.lookProductItems.filter((lpi) => lpi.lookId !== lookId);
-    } else {
-      this.state.looks.push(look);
-    }
-
-    assetIds.forEach((aid, idx) => {
-      this.state.lookPhotos.push({
-        id: uid('lp'),
-        lookId,
-        assetId: aid,
-        photoRole: idx === 0 ? 'finished' : 'detail',
-        capturedAt: now,
-        sortOrder: idx,
-      });
-    });
-
-    const selectedItems = Array.isArray(input.selectedItems) ? input.selectedItems : [];
-    selectedItems.forEach((sel, idx) => {
-      const itemId = typeof sel === 'string' ? sel : sel.productItemId;
-      const snap = this.buildProductSnapshot(itemId);
-      if (!snap) return;
-      this.state.lookProductItems.push({
-        id: uid('lpi'),
-        lookId,
-        productItemId: snap.productItemId,
-        stepKey: (typeof sel === 'object' && sel.stepKey) || snap.categorySnapshot || '上妆',
-        stepOrder: idx + 1,
-        productNameSnapshot: snap.productNameSnapshot,
-        brandNameSnapshot: snap.brandNameSnapshot,
-        shadeSnapshot: snap.shadeSnapshot,
-        categorySnapshot: snap.categorySnapshot,
-      });
-      const targetItem = this.state.productItems.find((i) => i.id === itemId);
-      if (targetItem) {
-        targetItem.lastUsedAt = now;
+      if (input.id) {
+        const existing = this.state.looks.find((l) => l.id === input.id);
+        if (!existing) return { ok: false, error: '妆容不存在' };
+        Object.assign(existing, look, { createdAt: existing.createdAt });
+        this.state.lookPhotos = this.state.lookPhotos.filter((lp) => lp.lookId !== lookId);
+        this.state.lookProductItems = this.state.lookProductItems.filter((lpi) => lpi.lookId !== lookId);
+      } else {
+        this.state.looks.push(look);
       }
-    });
 
-    this.persist();
-    return { ok: true, look: this.state.looks.find((l) => l.id === lookId) };
+      assetIds.forEach((aid, idx) => {
+        this.state.lookPhotos.push({
+          id: uid('lp'),
+          lookId,
+          assetId: aid,
+          photoRole: idx === 0 ? 'finished' : 'detail',
+          capturedAt: now,
+          sortOrder: idx,
+        });
+      });
+
+      const selectedItems = Array.isArray(input.selectedItems) ? input.selectedItems : [];
+      selectedItems.forEach((sel, idx) => {
+        const itemId = typeof sel === 'string' ? sel : sel.productItemId;
+        const snap = this.buildProductSnapshot(itemId);
+        if (!snap) return;
+        this.state.lookProductItems.push({
+          id: uid('lpi'),
+          lookId,
+          productItemId: snap.productItemId,
+          stepKey: (typeof sel === 'object' && sel.stepKey) || snap.categorySnapshot || '上妆',
+          stepOrder: idx + 1,
+          productNameSnapshot: snap.productNameSnapshot,
+          brandNameSnapshot: snap.brandNameSnapshot,
+          shadeSnapshot: snap.shadeSnapshot,
+          categorySnapshot: snap.categorySnapshot,
+        });
+        const targetItem = this.state.productItems.find((i) => i.id === itemId);
+        if (targetItem) {
+          targetItem.lastUsedAt = now;
+        }
+      });
+
+      return { ok: true, look: this.state.looks.find((l) => l.id === lookId) };
+    });
   }
 
   addWearReview(lookId, input) {
     const look = this.state.looks.find((l) => l.id === lookId);
-    if (!look) return { ok: false, error: '妆容不存在' };
+    if (!look) return this.failValidation('wear_review', 'lookId', '妆容不存在');
     const timepointKey = (input.timepointKey || '').trim();
-    if (!timepointKey) return { ok: false, error: '请选择持妆时间点' };
+    if (!timepointKey) return this.failValidation('wear_review', 'timepointKey', '请选择持妆时间点');
     const mins = input.wearMinutes === '' || input.wearMinutes === null || input.wearMinutes === undefined
       ? 0
       : Number.parseInt(String(input.wearMinutes), 10);
-    if (!Number.isInteger(mins) || mins < 0) return { ok: false, error: '带妆分钟数需为非负整数' };
+    if (!Number.isInteger(mins) || mins < 0) {
+      return this.failValidation('wear_review', 'wearMinutes', '带妆分钟数需为非负整数');
+    }
 
-    const now = new Date().toISOString();
-    const review = {
-      id: uid('wr'),
-      lookId,
-      assetId: input.assetId || null,
-      capturedAt: now,
-      wearMinutes: mins,
-      timepointKey,
-      overallRating: Number(input.overallRating) || 4,
-      smudgeLevel: input.smudgeLevel || '无',
-      oxidationLevel: input.oxidationLevel || '轻微',
-      makeupLossLevel: input.makeupLossLevel || '轻微',
-      oilLevel: input.oilLevel || 'T区微油',
-      cakingLevel: input.cakingLevel || '无',
-      floatingLevel: input.floatingLevel || '无',
-      patchinessLevel: input.patchinessLevel || '无',
-      notesPrivate: (input.notesPrivate || '').trim(),
-    };
-    this.state.wearReviews.push(review);
-    look.updatedAt = now;
-    this.persist();
-    return { ok: true, review };
+    return this.runPersistMutation('wear_review', () => {
+      const targetLook = this.state.looks.find((l) => l.id === lookId);
+      const now = new Date().toISOString();
+      const review = {
+        id: uid('wr'),
+        lookId,
+        assetId: input.assetId || null,
+        capturedAt: now,
+        wearMinutes: mins,
+        timepointKey,
+        overallRating: Number(input.overallRating) || 4,
+        smudgeLevel: input.smudgeLevel || '无',
+        oxidationLevel: input.oxidationLevel || '轻微',
+        makeupLossLevel: input.makeupLossLevel || '轻微',
+        oilLevel: input.oilLevel || 'T区微油',
+        cakingLevel: input.cakingLevel || '无',
+        floatingLevel: input.floatingLevel || '无',
+        patchinessLevel: input.patchinessLevel || '无',
+        notesPrivate: (input.notesPrivate || '').trim(),
+      };
+      this.state.wearReviews.push(review);
+      if (targetLook) targetLook.updatedAt = now;
+      return { ok: true, review };
+    });
   }
 
   /* ---------------- 日常：流程、使用记录、肌肤日记 ---------------- */
 
   recordRoutineExecution({ routineId, logDate, completedStepIds = [], notesPrivate = '' }) {
     const routine = this.state.routines.find((r) => r.id === routineId);
-    if (!routine) return { ok: false, error: '未找到对应护肤流程' };
-    if (!isValidDate(logDate)) return { ok: false, error: '日期无效' };
+    if (!routine) return this.failValidation('routine_log', 'routineId', '未找到对应护肤流程');
+    if (!isValidDate(logDate)) return this.failValidation('routine_log', 'logDate', '日期无效');
 
-    const now = new Date().toISOString();
-    const items = [];
-    for (const step of routine.steps) {
-      const done = completedStepIds.includes(step.id);
-      if (step.products.length === 0) {
-        items.push({
-          id: uid('rli'),
-          routineStepId: step.id,
-          stepNameSnapshot: step.name,
-          productItemId: null,
-          productNameSnapshot: step.name,
-          brandNameSnapshot: '',
-          shadeSnapshot: '',
-          categorySnapshot: '流程步骤',
-          completed: done,
-        });
-      } else {
-        for (const sp of step.products) {
-          const liveSnap = sp.productItemId ? this.buildProductSnapshot(sp.productItemId) : null;
+    return this.runPersistMutation('routine_log', () => {
+      const targetRoutine = this.state.routines.find((r) => r.id === routineId);
+      const now = new Date().toISOString();
+      const items = [];
+      for (const step of targetRoutine.steps) {
+        const done = completedStepIds.includes(step.id);
+        if (step.products.length === 0) {
           items.push({
             id: uid('rli'),
             routineStepId: step.id,
             stepNameSnapshot: step.name,
-            productItemId: sp.productItemId || null,
-            productNameSnapshot: liveSnap ? liveSnap.productNameSnapshot : sp.productNameSnapshot,
-            brandNameSnapshot: liveSnap ? liveSnap.brandNameSnapshot : (sp.brandNameSnapshot || ''),
-            shadeSnapshot: liveSnap ? liveSnap.shadeSnapshot : (sp.shadeSnapshot || ''),
-            categorySnapshot: liveSnap ? liveSnap.categorySnapshot : (sp.categorySnapshot || ''),
+            productItemId: null,
+            productNameSnapshot: step.name,
+            brandNameSnapshot: '',
+            shadeSnapshot: '',
+            categorySnapshot: '流程步骤',
             completed: done,
           });
-          if (done && sp.productItemId) {
-            const targetItem = this.state.productItems.find((i) => i.id === sp.productItemId);
-            if (targetItem) targetItem.lastUsedAt = now;
+        } else {
+          for (const sp of step.products) {
+            const liveSnap = sp.productItemId ? this.buildProductSnapshot(sp.productItemId) : null;
+            items.push({
+              id: uid('rli'),
+              routineStepId: step.id,
+              stepNameSnapshot: step.name,
+              productItemId: sp.productItemId || null,
+              productNameSnapshot: liveSnap ? liveSnap.productNameSnapshot : sp.productNameSnapshot,
+              brandNameSnapshot: liveSnap ? liveSnap.brandNameSnapshot : (sp.brandNameSnapshot || ''),
+              shadeSnapshot: liveSnap ? liveSnap.shadeSnapshot : (sp.shadeSnapshot || ''),
+              categorySnapshot: liveSnap ? liveSnap.categorySnapshot : (sp.categorySnapshot || ''),
+              completed: done,
+            });
+            if (done && sp.productItemId) {
+              const targetItem = this.state.productItems.find((i) => i.id === sp.productItemId);
+              if (targetItem) targetItem.lastUsedAt = now;
+            }
           }
         }
       }
-    }
 
-    const log = {
-      id: uid('rlog'),
-      routineId: routine.id,
-      routineNameSnapshot: routine.name,
-      performedAt: now,
-      logDate,
-      completed: routine.steps.length > 0 && completedStepIds.length === routine.steps.length,
-      notesPrivate: notesPrivate.trim(),
-      items,
-    };
-    this.state.routineLogs.unshift(log);
-    this.persist();
-    return { ok: true, log };
+      const log = {
+        id: uid('rlog'),
+        routineId: targetRoutine.id,
+        routineNameSnapshot: targetRoutine.name,
+        performedAt: now,
+        logDate,
+        completed: targetRoutine.steps.length > 0 && completedStepIds.length === targetRoutine.steps.length,
+        notesPrivate: notesPrivate.trim(),
+        items,
+      };
+      this.state.routineLogs.unshift(log);
+      return { ok: true, log };
+    });
   }
 
   saveRoutine(input) {
     const name = (input.name || '').trim();
-    if (!name) return { ok: false, error: '请填写流程名称' };
+    if (!name) return this.failValidation('routine', 'name', '请填写流程名称');
     const stepNames = (input.steps || []).map((s) => ({
       name: (s.name || '').trim(),
       productItemId: s.productItemId || null,
     })).filter((s) => s.name !== '');
-    if (stepNames.length === 0) return { ok: false, error: '请至少添加一个流程步骤' };
+    if (stepNames.length === 0) return this.failValidation('routine', 'steps', '请至少添加一个流程步骤');
 
-    const steps = stepNames.map((s, idx) => {
-      const snap = s.productItemId ? this.buildProductSnapshot(s.productItemId) : null;
-      return {
-        id: uid('rts'),
-        name: s.name,
-        sortOrder: idx + 1,
-        products: snap
-          ? [{
-              id: uid('rtsp'),
-              productItemId: snap.productItemId,
-              productNameSnapshot: snap.productNameSnapshot,
-              brandNameSnapshot: snap.brandNameSnapshot,
-              shadeSnapshot: snap.shadeSnapshot,
-              categorySnapshot: snap.categorySnapshot,
-            }]
-          : [],
+    return this.runPersistMutation('routine', () => {
+      const steps = stepNames.map((s, idx) => {
+        const snap = s.productItemId ? this.buildProductSnapshot(s.productItemId) : null;
+        return {
+          id: uid('rts'),
+          name: s.name,
+          sortOrder: idx + 1,
+          products: snap
+            ? [{
+                id: uid('rtsp'),
+                productItemId: snap.productItemId,
+                productNameSnapshot: snap.productNameSnapshot,
+                brandNameSnapshot: snap.brandNameSnapshot,
+                shadeSnapshot: snap.shadeSnapshot,
+                categorySnapshot: snap.categorySnapshot,
+              }]
+            : [],
+        };
+      });
+
+      const routine = {
+        id: uid('rt'),
+        name,
+        periodType: input.periodType || 'custom',
+        sortOrder: this.state.routines.length + 1,
+        steps,
       };
+      this.state.routines.push(routine);
+      return { ok: true, routine };
     });
-
-    const routine = {
-      id: uid('rt'),
-      name,
-      periodType: input.periodType || 'custom',
-      sortOrder: this.state.routines.length + 1,
-      steps,
-    };
-    this.state.routines.push(routine);
-    this.persist();
-    return { ok: true, routine };
   }
 
   saveUsageLog(input) {
     const item = this.state.productItems.find((i) => i.id === input.productItemId);
-    if (!item) return { ok: false, error: '请选择使用的产品实例' };
+    if (!item) return this.failValidation('usage_log', 'productItemId', '请选择使用的产品实例');
     const usedDate = (input.usedDate || '').trim();
-    if (!isValidDate(usedDate)) return { ok: false, error: '请选择有效使用日期' };
+    if (!isValidDate(usedDate)) return this.failValidation('usage_log', 'usedDate', '请选择有效使用日期');
 
-    const now = new Date().toISOString();
-    const log = {
-      id: uid('ulog'),
-      productItemId: item.id,
-      usedAt: `${usedDate}T12:00:00Z`,
-      usedDate,
-      scene: (input.scene || '').trim() || '日常使用',
-      feeling: (input.feeling || '').trim(),
-      notesPrivate: (input.notesPrivate || '').trim(),
-    };
-    this.state.productUsageLogs.unshift(log);
-    item.lastUsedAt = now;
-    item.updatedAt = now;
-    this.persist();
-    return { ok: true, log };
+    return this.runPersistMutation('usage_log', () => {
+      const targetItem = this.state.productItems.find((i) => i.id === input.productItemId);
+      const now = new Date().toISOString();
+      const log = {
+        id: uid('ulog'),
+        productItemId: targetItem.id,
+        usedAt: `${usedDate}T12:00:00Z`,
+        usedDate,
+        scene: (input.scene || '').trim() || '日常使用',
+        feeling: (input.feeling || '').trim(),
+        notesPrivate: (input.notesPrivate || '').trim(),
+      };
+      this.state.productUsageLogs.unshift(log);
+      targetItem.lastUsedAt = now;
+      targetItem.updatedAt = now;
+      return { ok: true, log };
+    });
   }
 
   saveSkinDiary(input) {
     const diaryDate = (input.diaryDate || '').trim();
-    if (!isValidDate(diaryDate)) return { ok: false, error: '请选择有效日期' };
+    if (!isValidDate(diaryDate)) return this.failValidation('skin_diary', 'diaryDate', '请选择有效日期');
     const notesPrivate = (input.notesPrivate || '').trim();
     const moodTags = Array.isArray(input.moodTags) ? input.moodTags.filter(Boolean) : [];
     const photoAssetIds = Array.isArray(input.photoAssetIds) ? input.photoAssetIds.filter(Boolean) : [];
     if (!notesPrivate && moodTags.length === 0 && photoAssetIds.length === 0) {
-      return { ok: false, error: '请填写日记内容、选择状态标签或添加照片' };
+      return this.failValidation('skin_diary', 'notesPrivate', '请填写日记内容、选择状态标签或添加照片');
     }
-    const now = new Date().toISOString();
-    const diary = {
-      id: uid('diary'),
-      diaryDate,
-      moodTags,
-      notesPrivate,
-      photoAssetIds,
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.state.skinDiaries.unshift(diary);
-    this.persist();
-    return { ok: true, diary };
+    return this.runPersistMutation('skin_diary', () => {
+      const now = new Date().toISOString();
+      const diary = {
+        id: uid('diary'),
+        diaryDate,
+        moodTags,
+        notesPrivate,
+        photoAssetIds,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.state.skinDiaries.unshift(diary);
+      return { ok: true, diary };
+    });
   }
 
   /* ---------------- 首页统计聚合（严格遵循 ADR-0001 第五节） ---------------- */

@@ -5,7 +5,13 @@
 
 import { todayStr } from '../expiry.js';
 import { isHeldStatus } from '../store.js';
-import { esc, renderEmptyState } from '../components/ui.js';
+import { recordDiagnostic } from '../diagnostics.js';
+import {
+  esc,
+  formatBytes,
+  renderEmptyState,
+  showFormError,
+} from '../components/ui.js';
 
 const PERIOD_LABELS = {
   morning: '早间流程',
@@ -331,8 +337,7 @@ function openNewRoutineSheet({ store, sheet, toast, onSaved }) {
           steps,
         });
         if (!res.ok) {
-          errBox.textContent = res.error;
-          errBox.style.display = 'block';
+          showFormError(errBox, res.error, toast);
           return;
         }
         close();
@@ -362,7 +367,7 @@ function openNewUsageSheet({ store, sheet, toast, defaultDate, onSaved }) {
               .join('')}
           </select>
         </div>
-        <div class="field-row">
+        <div class="field-row field-row-mobile-stack">
           <div class="field">
             <label>使用日期 <span class="req">*</span></label>
             <input class="input" type="date" name="usedDate" value="${esc(defaultDate)}" required />
@@ -396,8 +401,7 @@ function openNewUsageSheet({ store, sheet, toast, defaultDate, onSaved }) {
           notesPrivate: fd.get('notesPrivate'),
         });
         if (!res.ok) {
-          errBox.textContent = res.error;
-          errBox.style.display = 'block';
+          showFormError(errBox, res.error, toast);
           return;
         }
         close();
@@ -410,10 +414,17 @@ function openNewUsageSheet({ store, sheet, toast, defaultDate, onSaved }) {
 
 export function openNewDiarySheet({ store, sheet, toast, defaultDate = todayStr(), onSaved }) {
   let selectedFiles = [];
+  let previewUrls = [];
   const tagsPool = ['状态稳定', '干燥紧绷', 'T区微油', '轻微泛红', '起皮卡粉', '熬夜暗沉'];
+
+  const revokePreviews = () => {
+    for (const u of previewUrls) URL.revokeObjectURL(u);
+    previewUrls = [];
+  };
 
   sheet.open({
     title: '写一篇肌肤日记',
+    onClose: revokePreviews,
     bodyHtml: `
       <form id="diary-form" class="form-stack" novalidate>
         <div class="medical-notice">本记录仅用于个人主观追踪，不构成医疗诊断。默认不会在分享中公开。</div>
@@ -445,16 +456,26 @@ export function openNewDiarySheet({ store, sheet, toast, defaultDate = todayStr(
             </label>
             <span id="diary-files-hint" class="muted-note">未选择照片</span>
           </div>
+          <div id="diary-upload-preview" class="upload-preview-strip"></div>
         </div>
         <button type="submit" class="btn btn-primary btn-block">保存肌肤日记</button>
       </form>
     `,
     onMount: (body, close) => {
       const filesEl = body.querySelector('#diary-files');
+      const previewEl = body.querySelector('#diary-upload-preview');
       filesEl?.addEventListener('change', () => {
+        revokePreviews();
         selectedFiles = [...(filesEl.files || [])];
+        const totalSize = selectedFiles.reduce((s, f) => s + (f.size || 0), 0);
         body.querySelector('#diary-files-hint').textContent =
-          selectedFiles.length > 0 ? `已选 ${selectedFiles.length} 张` : '未选择照片';
+          selectedFiles.length > 0 ? `已选 ${selectedFiles.length} 张（${formatBytes(totalSize)}）` : '未选择照片';
+        previewUrls = selectedFiles.map((f) => URL.createObjectURL(f));
+        previewEl.innerHTML = previewUrls
+          .map(
+            (u, idx) => `<div class="upload-preview-chip"><img src="${esc(u)}" alt="日记附图 ${idx + 1}" /></div>`,
+          )
+          .join('');
       });
 
       body.querySelector('#diary-form')?.addEventListener('submit', async (e) => {
@@ -468,26 +489,29 @@ export function openNewDiarySheet({ store, sheet, toast, defaultDate = todayStr(
             const asset = await store.addImageFileAsset(f);
             photoAssetIds.push(asset.id);
           }
+          const tags = [...body.querySelectorAll('input[name="moodTags"]:checked')].map((el) => el.value);
+          const res = store.saveSkinDiary({
+            diaryDate: fd.get('diaryDate'),
+            moodTags: tags,
+            notesPrivate: fd.get('notesPrivate'),
+            photoAssetIds,
+          });
+          if (!res.ok) {
+            showFormError(errBox, res.error, toast);
+            return;
+          }
+          close();
+          toast('肌肤日记已保存');
+          onSaved?.();
         } catch (err) {
-          errBox.textContent = err.message || '日记图片保存失败';
-          errBox.style.display = 'block';
-          return;
+          if (!err?.stage) {
+            recordDiagnostic('unexpected_save_error', err, {
+              entityType: 'skin_diary',
+              fileCount: selectedFiles.length,
+            });
+          }
+          showFormError(errBox, err?.message || '保存日记失败，请在「我的」查看保存诊断日志', toast);
         }
-        const tags = [...body.querySelectorAll('input[name="moodTags"]:checked')].map((el) => el.value);
-        const res = store.saveSkinDiary({
-          diaryDate: fd.get('diaryDate'),
-          moodTags: tags,
-          notesPrivate: fd.get('notesPrivate'),
-          photoAssetIds,
-        });
-        if (!res.ok) {
-          errBox.textContent = res.error;
-          errBox.style.display = 'block';
-          return;
-        }
-        close();
-        toast('肌肤日记已保存');
-        onSaved?.();
       });
     },
   });

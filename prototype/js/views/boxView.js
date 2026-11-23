@@ -22,11 +22,15 @@ import {
 } from '../expiry.js';
 import { getSampleArtworkOptions } from '../assets.js';
 import { ITEM_STATUSES, isHeldStatus } from '../store.js';
+import { recordDiagnostic } from '../diagnostics.js';
 import {
   esc,
+  formatBytes,
   getProductDisplayImageUrl,
   renderEmptyState,
   renderSamplePickerGrid,
+  renderUploadPreview,
+  showFormError,
 } from '../components/ui.js';
 
 function statusPillClass(key) {
@@ -327,7 +331,7 @@ function renderProductDetail({ store, prod, today, ctx }) {
                         <button type="button" class="ghost-mini-btn" data-del-photo="${esc(ph.id)}" style="color:var(--danger);">删</button>
                       </div>
                       ${ph.isCover
-                        ? `<button type="button" class="ghost-mini-btn" data-clear-cover="1" style="width:100%;">取消封面(测兜底)</button>`
+                        ? `<button type="button" class="ghost-mini-btn" data-clear-cover="1" style="width:100%;">取消封面</button>`
                         : ''}
                     </div>
                   `;
@@ -360,8 +364,8 @@ function renderProductDetail({ store, prod, today, ctx }) {
       <!-- 持有实例清单（ProductItem） -->
       <div class="stack-sm">
         <div class="section-header" style="margin-bottom:0;">
-          <h2 class="section-title">实际持有实例（ProductItem · 共 ${items.length} 件）</h2>
-          <span class="section-hint">批次/开封/金额相互独立</span>
+          <h2 class="section-title">实际持有实例（${items.length} 件）</h2>
+          <span class="section-hint">批次/开封/金额独立</span>
         </div>
 
         ${items.length === 0
@@ -487,8 +491,17 @@ function renderItemCard(item, today, nearDays) {
 
 export function openProductFormSheet({ store, sheet, toast, productId = null, onSaved }) {
   const existing = productId ? store.state.products.find((p) => p.id === productId) : null;
+  const hasExistingPhotos = existing ? store.getProductPhotos(existing.id).length > 0 : false;
   let pendingFile = null;
+  let pendingPreviewUrl = '';
   let selectedSampleKey = '';
+
+  const revokePreview = () => {
+    if (pendingPreviewUrl) {
+      URL.revokeObjectURL(pendingPreviewUrl);
+      pendingPreviewUrl = '';
+    }
+  };
 
   const bodyHtml = `
     <form id="product-form" class="form-stack" novalidate>
@@ -539,11 +552,12 @@ export function openProductFormSheet({ store, sheet, toast, productId = null, on
         <label>${existing ? '追加产品照片（可选）' : '产品主图 / 封面（可选，不上传则显示占位图）'}</label>
         <div class="row-wrap">
           <label class="btn btn-secondary btn-sm" style="cursor:pointer;">
-            选择手机/电脑照片（存 IndexedDB）
+            选择照片（存 IndexedDB）
             <input type="file" accept="image/*" id="prod-file-input" style="display:none;" />
           </label>
           <span id="prod-file-name" class="muted-note">未选择本地文件</span>
         </div>
+        <div id="prod-upload-preview"></div>
         <div class="muted-note" style="margin-top:4px;">或点选一张本地离线示例图：</div>
         ${renderSamplePickerGrid('')}
       </div>
@@ -567,22 +581,57 @@ export function openProductFormSheet({ store, sheet, toast, productId = null, on
   sheet.open({
     title: existing ? '编辑产品主档' : '新增产品主档',
     bodyHtml,
+    onClose: revokePreview,
     onMount: (body, close) => {
       const form = body.querySelector('#product-form');
       const errBox = body.querySelector('#prod-form-error');
       const fileInput = body.querySelector('#prod-file-input');
       const fileNameEl = body.querySelector('#prod-file-name');
+      const previewWrap = body.querySelector('#prod-upload-preview');
+      const sampleOpts = getSampleArtworkOptions();
+
+      const updateUploadPreview = () => {
+        const badgeText = !existing || !hasExistingPhotos ? '将设为产品封面' : '将追加产品附图';
+        if (pendingFile && pendingPreviewUrl) {
+          previewWrap.innerHTML = renderUploadPreview({
+            previewUrl: pendingPreviewUrl,
+            title: pendingFile.name || '已选择照片',
+            badgeText,
+            subtitle: `${formatBytes(pendingFile.size)} · 保存后写入 IndexedDB`,
+          });
+        } else if (selectedSampleKey) {
+          const opt = sampleOpts.find((o) => o.key === selectedSampleKey);
+          previewWrap.innerHTML = opt
+            ? renderUploadPreview({
+                previewUrl: opt.url,
+                title: opt.title,
+                badgeText,
+                subtitle: '离线示例图',
+              })
+            : '';
+        } else {
+          previewWrap.innerHTML = '';
+        }
+      };
 
       fileInput?.addEventListener('change', () => {
+        revokePreview();
         const f = fileInput.files?.[0] || null;
         pendingFile = f;
         selectedSampleKey = '';
         body.querySelectorAll('[data-pick-sample]').forEach((b) => b.classList.remove('is-active'));
-        fileNameEl.textContent = f ? `已选：${f.name}` : '未选择本地文件';
+        if (f) {
+          pendingPreviewUrl = URL.createObjectURL(f);
+          fileNameEl.textContent = `已选：${f.name}`;
+        } else {
+          fileNameEl.textContent = '未选择本地文件';
+        }
+        updateUploadPreview();
       });
 
       body.querySelectorAll('[data-pick-sample]').forEach((btn) => {
         btn.addEventListener('click', () => {
+          revokePreview();
           const key = btn.dataset.pickSample;
           selectedSampleKey = selectedSampleKey === key ? '' : key;
           pendingFile = null;
@@ -591,6 +640,7 @@ export function openProductFormSheet({ store, sheet, toast, productId = null, on
           body.querySelectorAll('[data-pick-sample]').forEach((b) => {
             b.classList.toggle('is-active', b.dataset.pickSample === selectedSampleKey);
           });
+          updateUploadPreview();
         });
       });
 
@@ -619,35 +669,40 @@ export function openProductFormSheet({ store, sheet, toast, productId = null, on
               newAssetId = id;
             }
           }
+
+          const res = store.saveProduct({
+            id: existing?.id,
+            name: fd.get('name'),
+            categoryId: fd.get('categoryId'),
+            brandName: fd.get('brandName'),
+            shade: fd.get('shade'),
+            specification: fd.get('specification'),
+            texture: fd.get('texture'),
+            finish: fd.get('finish'),
+            notesPrivate: fd.get('notesPrivate'),
+            newAssetId,
+            makeNewPhotoCover: !existing,
+          });
+
+          if (!res.ok) {
+            showFormError(errBox, res.error, toast);
+            return;
+          }
+
+          close();
+          toast(existing ? '产品修改已保存（历史妆容快照保持不变）' : '产品主档已保存');
+          onSaved?.(res.product, { andAddItem });
         } catch (err) {
-          errBox.textContent = err.message || '图片处理失败';
-          errBox.style.display = 'block';
-          return;
+          if (!err?.stage) {
+            recordDiagnostic('unexpected_save_error', err, {
+              entityType: 'product',
+              action: existing ? 'update' : 'create',
+              hasFile: Boolean(pendingFile),
+              fileSize: pendingFile?.size || 0,
+            });
+          }
+          showFormError(errBox, err?.message || '保存产品失败，请在「我的」查看保存诊断日志', toast);
         }
-
-        const res = store.saveProduct({
-          id: existing?.id,
-          name: fd.get('name'),
-          categoryId: fd.get('categoryId'),
-          brandName: fd.get('brandName'),
-          shade: fd.get('shade'),
-          specification: fd.get('specification'),
-          texture: fd.get('texture'),
-          finish: fd.get('finish'),
-          notesPrivate: fd.get('notesPrivate'),
-          newAssetId,
-          makeNewPhotoCover: !existing,
-        });
-
-        if (!res.ok) {
-          errBox.textContent = res.error;
-          errBox.style.display = 'block';
-          return;
-        }
-
-        close();
-        toast(existing ? '产品修改已保存（历史妆容快照保持不变）' : '产品主档已保存');
-        onSaved?.(res.product, { andAddItem });
       };
 
       form.addEventListener('submit', (e) => {
@@ -693,16 +748,16 @@ export function openItemFormSheet({ store, sheet, toast, productId, itemId = nul
         </div>
       </div>
 
-      <div class="field-row">
+      <div class="field-row field-row-mobile-stack">
         <div class="field">
           <label>购买币种（ISO 4217）</label>
           <select class="select" name="currencyCode" id="item-currency-select">
             ${CURRENCY_ORDER.map((c) => {
               const info = CURRENCIES[c];
-              return `<option value="${esc(c)}" ${initialCurrency === c ? 'selected' : ''}>${esc(c)} · ${esc(info.name)}（${info.exponent}位）</option>`;
+              return `<option value="${esc(c)}" ${initialCurrency === c ? 'selected' : ''}>${esc(c)} · ${esc(info.name)} (${info.exponent}位)</option>`;
             }).join('')}
             ${UNCONFIGURED_DEMO_CODES.map(
-              (c) => `<option value="${esc(c)}" ${initialCurrency === c ? 'selected' : ''}>${esc(c)}（未配置精度·测试拦截）</option>`,
+              (c) => `<option value="${esc(c)}" ${initialCurrency === c ? 'selected' : ''}>${esc(c)} (未配置·测拦截)</option>`,
             ).join('')}
           </select>
         </div>
@@ -713,7 +768,7 @@ export function openItemFormSheet({ store, sheet, toast, productId, itemId = nul
       </div>
       <div id="item-currency-hint" class="field-help">${esc(describePrecision(initialCurrency))}</div>
 
-      <div class="field-row">
+      <div class="field-row field-row-mobile-stack">
         <div class="field">
           <label>购买日期</label>
           <input class="input" type="date" name="purchaseDate" value="${esc(existing?.purchaseDate || '')}" />
@@ -727,7 +782,7 @@ export function openItemFormSheet({ store, sheet, toast, productId, itemId = nul
       <div class="divider"></div>
       <div style="font-size:13px;font-weight:700;">有效期要素（缺少必要项绝不猜测）</div>
 
-      <div class="field-row">
+      <div class="field-row field-row-mobile-stack">
         <div class="field">
           <label>生产日期</label>
           <input class="input" type="date" name="manufactureDate" id="f-mfg" value="${esc(existing?.manufactureDate || '')}" />
@@ -738,7 +793,7 @@ export function openItemFormSheet({ store, sheet, toast, productId, itemId = nul
         </div>
       </div>
 
-      <div class="field-row">
+      <div class="field-row field-row-mobile-stack">
         <div class="field">
           <label>开封日期</label>
           <input class="input" type="date" name="openedDate" id="f-opened" value="${esc(existing?.openedDate || '')}" />
@@ -829,31 +884,35 @@ export function openItemFormSheet({ store, sheet, toast, productId, itemId = nul
       form.addEventListener('submit', (e) => {
         e.preventDefault();
         errBox.style.display = 'none';
-        const fd = new FormData(form);
-        const res = store.saveProductItem({
-          id: existing?.id,
-          productId: prod.id,
-          status: fd.get('status'),
-          remainingPercent: fd.get('remainingPercent'),
-          currencyCode: fd.get('currencyCode'),
-          purchasePriceInput: fd.get('purchasePriceInput'),
-          purchaseDate: fd.get('purchaseDate'),
-          purchaseChannel: fd.get('purchaseChannel'),
-          manufactureDate: fd.get('manufactureDate'),
-          unopenedShelfMonths: fd.get('unopenedShelfMonths'),
-          openedDate: fd.get('openedDate'),
-          paoMonths: fd.get('paoMonths'),
-          confirmedExpiryDate: fd.get('confirmedExpiryDate'),
-        });
+        try {
+          const fd = new FormData(form);
+          const res = store.saveProductItem({
+            id: existing?.id,
+            productId: prod.id,
+            status: fd.get('status'),
+            remainingPercent: fd.get('remainingPercent'),
+            currencyCode: fd.get('currencyCode'),
+            purchasePriceInput: fd.get('purchasePriceInput'),
+            purchaseDate: fd.get('purchaseDate'),
+            purchaseChannel: fd.get('purchaseChannel'),
+            manufactureDate: fd.get('manufactureDate'),
+            unopenedShelfMonths: fd.get('unopenedShelfMonths'),
+            openedDate: fd.get('openedDate'),
+            paoMonths: fd.get('paoMonths'),
+            confirmedExpiryDate: fd.get('confirmedExpiryDate'),
+          });
 
-        if (!res.ok) {
-          errBox.textContent = res.error;
-          errBox.style.display = 'block';
-          return;
+          if (!res.ok) {
+            showFormError(errBox, res.error, toast);
+            return;
+          }
+          close();
+          toast(existing ? '持有实例已更新' : '新持有实例已添加');
+          onSaved?.(res.item);
+        } catch (err) {
+          recordDiagnostic('unexpected_save_error', err, { entityType: 'product_item' });
+          showFormError(errBox, err?.message || '保存持有实例失败，请查看诊断日志', toast);
         }
-        close();
-        toast(existing ? '持有实例已更新' : '新持有实例已添加');
-        onSaved?.(res.item);
       });
     },
   });
@@ -941,15 +1000,32 @@ export function bindBoxEvents(container, { store, viewState, actions, sheet, dia
   });
 
   container.querySelector('#detail-upload-photo')?.addEventListener('change', async (e) => {
-    const file = e.target.files?.[0];
+    const inputEl = e.target;
+    const file = inputEl.files?.[0];
     if (!file || !viewState.selectedProductId) return;
     try {
       const asset = await store.addImageFileAsset(file);
-      store.addProductPhoto(viewState.selectedProductId, asset.id);
+      const res = store.runPersistMutation('product_photo', () => {
+        store.addProductPhoto(viewState.selectedProductId, asset.id);
+        return { ok: true };
+      });
+      if (!res.ok) {
+        toast(res.error);
+        return;
+      }
       toast('照片已保存至 IndexedDB，页面刷新仍可展示');
       actions.rerender();
     } catch (err) {
-      toast(err.message || '图片保存失败');
+      if (!err?.stage) {
+        recordDiagnostic('unexpected_save_error', err, {
+          entityType: 'product_photo',
+          hasFile: true,
+          fileSize: file?.size || 0,
+        });
+      }
+      toast(err?.message || '图片保存失败，请在「我的」查看保存诊断日志');
+    } finally {
+      inputEl.value = '';
     }
   });
 
