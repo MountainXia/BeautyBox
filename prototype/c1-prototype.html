@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="theme-color" content="#F7F5F2" />
+  <title>妆匣 BeautyBox · TASK02.1-C1 交互原型</title>
+  <link rel="stylesheet" href="./styles/tokens.css" />
+  <link rel="stylesheet" href="./styles/components.css" />
+</head>
+<body>
+  <div id="app-shell" class="app-shell">
+    <div id="desktop-toolbar" class="desktop-toolbar">
+      <div class="desktop-toolbar-left">
+        <span class="badge-dot"></span>
+        <span>BeautyBox 妆匣 · TASK02.1-C1 产品体验交互原型（模拟数据 · 与正式代码完全隔离）</span>
+      </div>
+      <div class="desktop-toolbar-actions">
+        <a href="./index.html" class="ghost-mini-btn" style="text-decoration:none;">返回原原型</a>
+      </div>
+    </div>
+
+    <div id="device-frame" class="device-frame">
+      <header id="app-header" class="app-header"></header>
+      <main id="app-main" class="app-main" tabindex="-1"></main>
+
+      <div id="sheet-root" class="overlay-root" aria-hidden="true"></div>
+      <div id="dialog-root" class="overlay-root" aria-hidden="true"></div>
+      <div id="toast-root" class="toast-root" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <script type="module" src="./js/c1-prototype.js"></script>
+</body>
+</html>
