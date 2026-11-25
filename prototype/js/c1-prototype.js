@@ -386,19 +386,21 @@ function renderDetailView() {
             <div>• 购买记录：${priceText ? esc(priceText) : '未填金额'}${item.acquisitionMethod ? ` · ${esc(item.acquisitionMethod)}` : ''}</div>
           </div>
 
-          <div class="row-wrap" style="margin-top:10px;">
-            <button type="button" class="btn btn-secondary btn-sm" data-c1-edit-item="${esc(item.id)}">补充 / 编辑详情</button>
-            ${item.status === 'unrecorded' ? `
-              <button type="button" class="btn btn-soft btn-sm" data-c1-set-status="${esc(item.id)}:unopened">设为未开封</button>
-              <button type="button" class="btn btn-soft btn-sm" data-c1-set-status="${esc(item.id)}:in_use">设为使用中</button>
-            ` : ''}
-            ${item.status === 'unopened' ? `
-              <button type="button" class="btn btn-soft btn-sm" data-c1-open-today="${esc(item.id)}">今日开封使用</button>
-            ` : ''}
-            ${item.status !== 'used_up' ? `
-              <button type="button" class="btn btn-secondary btn-sm" data-c1-mark-usedup="${esc(item.id)}">标记用完</button>
-            ` : ''}
-            <button type="button" class="btn btn-danger btn-sm" data-c1-remove-item="${esc(item.id)}">移除这一件</button>
+          <div class="stack-sm" style="margin-top:10px;">
+            <div style="font-size:12px;color:var(--text-tertiary);">快速改状态</div>
+            <div class="segmented">
+              <button type="button" class="seg-btn ${item.status === 'unrecorded' ? 'is-active' : ''}" data-c1-set-status="${esc(item.id)}:unrecorded">未记录</button>
+              <button type="button" class="seg-btn ${item.status === 'unopened' ? 'is-active' : ''}" data-c1-set-status="${esc(item.id)}:unopened">未开封</button>
+              <button type="button" class="seg-btn ${item.status === 'in_use' ? 'is-active' : ''}" data-c1-set-status="${esc(item.id)}:in_use">使用中</button>
+              <button type="button" class="seg-btn ${item.status === 'used_up' ? 'is-active' : ''}" data-c1-mark-usedup="${esc(item.id)}">已用完</button>
+            </div>
+            <div class="row-between" style="margin-top:6px;gap:8px;">
+              <button type="button" class="btn btn-secondary btn-sm" data-c1-edit-item="${esc(item.id)}">编辑详细信息</button>
+              ${item.status === 'unopened'
+                ? `<button type="button" class="btn btn-soft btn-sm" data-c1-open-today="${esc(item.id)}">今日开封</button>`
+                : ''}
+              <button type="button" class="ghost-mini-btn" data-c1-remove-item="${esc(item.id)}" style="color:var(--danger);border-color:rgba(180,75,75,0.28);margin-left:auto;">删掉这 1 ${esc(unit)}</button>
+            </div>
           </div>
         ` : ''}
       </div>
@@ -476,14 +478,14 @@ function renderDetailView() {
         </div>
       ` : ''}
 
-      <!-- 产品级移除 -->
+      <!-- 整款产品管理（与上面“删掉这 1 件”明确区分） -->
       <div class="card">
-        <div class="row-between" style="gap:10px;">
-          <div style="flex:1;">
-            <div style="font-weight:700;font-size:14px;">管理整款产品</div>
-            <div class="muted-note">移除后将进入「最近删除」保留 7 天，不会破坏历史妆容中的产品名称快照。</div>
+        <div class="row-between" style="gap:12px;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:700;font-size:14px;">整款产品管理</div>
+            <div class="muted-note" style="margin-top:2px;">移除整款产品将进入「最近删除」保留 7 天，不影响历史妆容。</div>
           </div>
-          <button type="button" class="btn btn-danger btn-sm" id="c1-remove-product">从我的美妆中移除</button>
+          <button type="button" class="btn btn-danger btn-sm" id="c1-remove-product" style="flex-shrink:0;">移除整款产品</button>
         </div>
       </div>
     </div>
@@ -857,17 +859,29 @@ function bindDraftExpiryHelpers(box, draft) {
   const btnUnopened = box.querySelector('[data-adopt-unopened]');
   const btnOpened = box.querySelector('[data-adopt-opened]');
   const confInput = box.querySelector('[data-df="confirmedExpiryDate"]');
+  const mfgInput = box.querySelector('[data-df="manufactureDate"]');
+  const shelfInput = box.querySelector('[data-df="unopenedShelfMonths"]');
+  const openInput = box.querySelector('[data-df="openedDate"]');
+  const paoInput = box.querySelector('[data-df="paoMonths"]');
+
+  const readVal = (el, fallback) => (el ? String(el.value || '').trim() : String(fallback || '').trim());
 
   const refresh = () => {
+    const mfg = readVal(mfgInput, draft.manufactureDate);
+    const shelfRaw = readVal(shelfInput, draft.unopenedShelfMonths);
+    const opened = readVal(openInput, draft.openedDate);
+    const paoRaw = readVal(paoInput, draft.paoMonths);
+
+    draft.manufactureDate = mfg;
+    draft.unopenedShelfMonths = shelfRaw;
+    draft.openedDate = opened;
+    draft.paoMonths = paoRaw;
+
     const dual = describeC1ItemDualExpiry({
-      manufactureDate: draft.manufactureDate || null,
-      unopenedShelfMonths: /^\d+$/.test(String(draft.unopenedShelfMonths || ''))
-        ? Number.parseInt(String(draft.unopenedShelfMonths), 10)
-        : null,
-      openedDate: draft.openedDate || null,
-      paoMonths: /^\d+$/.test(String(draft.paoMonths || ''))
-        ? Number.parseInt(String(draft.paoMonths), 10)
-        : null,
+      manufactureDate: mfg || null,
+      unopenedShelfMonths: /^\d+$/.test(shelfRaw) ? Number.parseInt(shelfRaw, 10) : null,
+      openedDate: opened || null,
+      paoMonths: /^\d+$/.test(paoRaw) ? Number.parseInt(paoRaw, 10) : null,
     });
     if (previewEl) {
       const lines = [
@@ -882,17 +896,20 @@ function bindDraftExpiryHelpers(box, draft) {
     }
     if (btnUnopened) {
       btnUnopened.disabled = !dual.unopened.date;
+      btnUnopened.style.display = dual.unopened.date ? '' : 'none';
       btnUnopened.textContent = dual.unopened.date ? `采纳未开封 (${dual.unopened.date})` : '采纳未开封推算';
     }
     if (btnOpened) {
       btnOpened.disabled = !dual.opened.date;
+      btnOpened.style.display = dual.opened.date ? '' : 'none';
       btnOpened.textContent = dual.opened.date ? `采纳开封后 (${dual.opened.date})` : '采纳开封后推算';
     }
     return dual;
   };
 
-  box.querySelectorAll('[data-df="manufactureDate"], [data-df="unopenedShelfMonths"], [data-df="openedDate"], [data-df="paoMonths"]').forEach((el) => {
-    el.addEventListener('input', refresh);
+  [mfgInput, shelfInput, openInput, paoInput].forEach((el) => {
+    el?.addEventListener('input', refresh);
+    el?.addEventListener('change', refresh);
   });
 
   btnUnopened?.addEventListener('click', () => {
