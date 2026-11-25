@@ -49,9 +49,37 @@ const ui = {
 
 const headerEl = document.getElementById('app-header');
 const mainEl = document.getElementById('app-main');
-const sheet = createSheetManager(document.getElementById('sheet-root'));
-const dialog = createDialogManager(document.getElementById('dialog-root'));
+const sheetRootEl = document.getElementById('sheet-root');
+const dialogRootEl = document.getElementById('dialog-root');
+const sheet = createSheetManager(sheetRootEl);
+const dialog = createDialogManager(dialogRootEl);
 const toast = createToastManager(document.getElementById('toast-root'));
+
+/** iOS Safari 防卡死兜底：确保弹窗关闭后绝不残留 has-modal-open 锁死页面触控 */
+function syncModalLockSafety() {
+  const anyOpen =
+    sheetRootEl?.classList.contains('is-open') || dialogRootEl?.classList.contains('is-open');
+  if (!anyOpen) {
+    document.documentElement.classList.remove('has-modal-open');
+  }
+}
+
+if (typeof MutationObserver !== 'undefined' && sheetRootEl && dialogRootEl) {
+  const obs = new MutationObserver(syncModalLockSafety);
+  obs.observe(sheetRootEl, { attributes: true, attributeFilter: ['class'] });
+  obs.observe(dialogRootEl, { attributes: true, attributeFilter: ['class'] });
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('error', (e) => {
+    syncModalLockSafety();
+    toast(`页面异常：${e?.message || '未知错误'}`);
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    syncModalLockSafety();
+    toast(`操作异常：${e?.reason?.message || '未知错误'}`);
+  });
+}
 
 function uid(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;

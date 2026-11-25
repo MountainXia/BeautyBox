@@ -9,6 +9,26 @@
   <title>妆匣 BeautyBox · TASK02.1-C1 交互原型</title>
   <link rel="stylesheet" href="./styles/tokens.css" />
   <link rel="stylesheet" href="./styles/components.css" />
+  <style>
+    /* C1 原型 iOS Safari 触控防卡死保护（不修改正式样式文件） */
+    html.has-modal-open .app-main {
+      touch-action: pan-y;
+    }
+    .sheet-backdrop,
+    .dialog-backdrop {
+      touch-action: manipulation;
+    }
+    .app-main,
+    .sheet-body,
+    .dialog-panel,
+    button,
+    a,
+    input,
+    select,
+    textarea {
+      touch-action: manipulation;
+    }
+  </style>
 </head>
 <body>
   <div id="app-shell" class="app-shell">
