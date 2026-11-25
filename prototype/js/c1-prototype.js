@@ -814,6 +814,17 @@ function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = fa
         </div>
       </div>
 
+      <div class="form-banner-info" data-dual-preview style="margin-top:8px;font-size:12px;"></div>
+
+      <div class="field" style="margin-top:8px;">
+        <label>用户确认到期日（选填，不自动覆盖）</label>
+        <input class="input" type="date" data-df="confirmedExpiryDate" value="${esc(draft.confirmedExpiryDate)}" />
+        <div class="row-wrap" style="margin-top:6px;">
+          <button type="button" class="btn btn-soft btn-sm" data-adopt-unopened>采纳未开封推算</button>
+          <button type="button" class="btn btn-soft btn-sm" data-adopt-opened>采纳开封后推算</button>
+        </div>
+      </div>
+
       <div class="field-row field-row-mobile-stack" style="margin-top:8px;">
         <div class="field">
           <label>购买价格（${esc(CURRENCIES[draft.currencyCode]?.name || '人民币')}）</label>
@@ -839,6 +850,67 @@ function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = fa
       ` : ''}
     </div>
   `;
+}
+
+function bindDraftExpiryHelpers(box, draft) {
+  const previewEl = box.querySelector('[data-dual-preview]');
+  const btnUnopened = box.querySelector('[data-adopt-unopened]');
+  const btnOpened = box.querySelector('[data-adopt-opened]');
+  const confInput = box.querySelector('[data-df="confirmedExpiryDate"]');
+
+  const refresh = () => {
+    const dual = describeC1ItemDualExpiry({
+      manufactureDate: draft.manufactureDate || null,
+      unopenedShelfMonths: /^\d+$/.test(String(draft.unopenedShelfMonths || ''))
+        ? Number.parseInt(String(draft.unopenedShelfMonths), 10)
+        : null,
+      openedDate: draft.openedDate || null,
+      paoMonths: /^\d+$/.test(String(draft.paoMonths || ''))
+        ? Number.parseInt(String(draft.paoMonths), 10)
+        : null,
+    });
+    if (previewEl) {
+      const lines = [
+        dual.unopened.date
+          ? `未开封推算：${dual.unopened.date}（${dual.unopened.formula}）`
+          : `未开封推算：${dual.unopened.missingHint || '未填写生产日期与未开封保质期'}`,
+        dual.opened.date
+          ? `开封后推算：${dual.opened.date}（${dual.opened.formula}）`
+          : `开封后推算：${dual.opened.missingHint || '未填写开封日期与 PAO'}`,
+      ];
+      previewEl.innerHTML = lines.map((l) => `<div>${esc(l)}</div>`).join('');
+    }
+    if (btnUnopened) {
+      btnUnopened.disabled = !dual.unopened.date;
+      btnUnopened.textContent = dual.unopened.date ? `采纳未开封 (${dual.unopened.date})` : '采纳未开封推算';
+    }
+    if (btnOpened) {
+      btnOpened.disabled = !dual.opened.date;
+      btnOpened.textContent = dual.opened.date ? `采纳开封后 (${dual.opened.date})` : '采纳开封后推算';
+    }
+    return dual;
+  };
+
+  box.querySelectorAll('[data-df="manufactureDate"], [data-df="unopenedShelfMonths"], [data-df="openedDate"], [data-df="paoMonths"]').forEach((el) => {
+    el.addEventListener('input', refresh);
+  });
+
+  btnUnopened?.addEventListener('click', () => {
+    const dual = refresh();
+    if (dual.unopened.date && confInput) {
+      confInput.value = dual.unopened.date;
+      draft.confirmedExpiryDate = dual.unopened.date;
+    }
+  });
+  btnOpened?.addEventListener('click', () => {
+    const dual = refresh();
+    if (dual.opened.date && confInput) {
+      confInput.value = dual.opened.date;
+      draft.confirmedExpiryDate = dual.opened.date;
+    }
+  });
+
+  refresh();
 }
 
 function openAddOrEditProductSheet(existing = null) {
@@ -1056,6 +1128,7 @@ function openAddOrEditProductSheet(existing = null) {
 
         detailsBodyEl.querySelectorAll('[data-draft-idx]').forEach((box) => {
           const idx = Number.parseInt(box.dataset.draftIdx, 10);
+          bindDraftExpiryHelpers(box, itemDrafts[idx]);
           box.querySelectorAll('[data-df]').forEach((inp) => {
             const eventName = inp.tagName === 'SELECT' ? 'change' : 'input';
             inp.addEventListener(eventName, () => {
@@ -1282,6 +1355,8 @@ function openEditSingleItemSheet(prod, item) {
     onMount: (body, close) => {
       const form = body.querySelector('#c1-single-item-form');
       const errBox = body.querySelector('#c1-si-err');
+      const box = body.querySelector('[data-draft-idx="0"]');
+      if (box) bindDraftExpiryHelpers(box, draft);
       body.querySelectorAll('[data-df]').forEach((inp) => {
         const ev = inp.tagName === 'SELECT' ? 'change' : 'input';
         inp.addEventListener(ev, () => {
@@ -1307,6 +1382,7 @@ function openEditSingleItemSheet(prod, item) {
         item.unopenedShelfMonths = draft.unopenedShelfMonths ? Number.parseInt(String(draft.unopenedShelfMonths), 10) : null;
         item.openedDate = draft.openedDate || null;
         item.paoMonths = draft.paoMonths ? Number.parseInt(String(draft.paoMonths), 10) : null;
+        item.confirmedExpiryDate = draft.confirmedExpiryDate || null;
         item.purchasePriceMinor = minor;
         item.currencyCode = draft.currencyCode || 'CNY';
         item.acquisitionMethod = draft.acquisitionPreset || '';

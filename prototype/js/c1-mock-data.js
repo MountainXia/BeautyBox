@@ -4,7 +4,7 @@
  */
 
 import { deriveDualComputedExpiry, expiryStatus, resolveExpiry, todayStr } from './expiry.js';
-import { CURRENCIES } from './currency.js';
+import { CURRENCIES, formatMinor } from './currency.js';
 
 /** 可扩展的一级 / 二级分类字典与默认数量单位 */
 export const C1_CATEGORY_TREE = [
