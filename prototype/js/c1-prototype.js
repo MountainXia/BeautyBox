@@ -18,6 +18,7 @@ import {
   findCategoryNames,
   formatC1Price,
   formatSpecDisplay,
+  getAllowedC1Statuses,
   summarizeProductCounts,
 } from './c1-mock-data.js';
 import { CURRENCIES, CURRENCY_ORDER, minorToDecimalString, parseAmountToMinor } from './currency.js';
@@ -374,34 +375,37 @@ function renderDetailView() {
         ${isExpanded ? `
           <div class="divider"></div>
           <div class="stack-sm" style="font-size:12px;color:var(--text-secondary);">
-            ${item.manufactureDate || item.unopenedShelfMonths
-              ? `<div>生产日期：${esc(item.manufactureDate || '未填')} ｜ 未开封保质期：${item.unopenedShelfMonths ? `${item.unopenedShelfMonths} 个月` : '未填'}</div>`
-              : ''}
-            ${item.openedDate || item.paoMonths
-              ? `<div>开封日期：${esc(item.openedDate || '未填')} ｜ 开封后期限：${item.paoMonths ? `${item.paoMonths} 个月` : '未填'}</div>`
-              : ''}
-            ${dual.unopened.date ? `<div>• 未开封推算：${esc(dual.unopened.date)}（${esc(dual.unopened.formula)}）</div>` : ''}
-            ${dual.opened.date ? `<div>• 开封后推算：${esc(dual.opened.date)}（${esc(dual.opened.formula)}）</div>` : ''}
-            ${item.confirmedExpiryDate ? `<div>• 确认到期日：<strong>${esc(item.confirmedExpiryDate)}</strong></div>` : ''}
-            <div>• 购买记录：${priceText ? esc(priceText) : '未填金额'}${item.acquisitionMethod ? ` · ${esc(item.acquisitionMethod)}` : ''}</div>
+            <div class="row-between" style="gap:8px;">
+              <span>到期参考：<strong>${esc(shortExpiry)}</strong></span>
+              <button type="button" class="help-icon-btn" data-c1-expiry-help="${esc(item.id)}" aria-label="查看有效期计算详情">?</button>
+            </div>
+            <div>购买记录：${priceText ? esc(priceText) : '未填金额'}${item.acquisitionMethod ? ` · ${esc(item.acquisitionMethod)}` : ''}</div>
           </div>
 
-          <div class="stack-sm" style="margin-top:10px;">
-            <div style="font-size:12px;color:var(--text-tertiary);">快速改状态</div>
-            <div class="segmented">
-              <button type="button" class="seg-btn ${item.status === 'unrecorded' ? 'is-active' : ''}" data-c1-set-status="${esc(item.id)}:unrecorded">未记录</button>
-              <button type="button" class="seg-btn ${item.status === 'unopened' ? 'is-active' : ''}" data-c1-set-status="${esc(item.id)}:unopened">未开封</button>
-              <button type="button" class="seg-btn ${item.status === 'in_use' ? 'is-active' : ''}" data-c1-set-status="${esc(item.id)}:in_use">使用中</button>
-              <button type="button" class="seg-btn ${item.status === 'used_up' ? 'is-active' : ''}" data-c1-mark-usedup="${esc(item.id)}">已用完</button>
-            </div>
-            <div class="row-between" style="margin-top:6px;gap:8px;">
-              <button type="button" class="btn btn-secondary btn-sm" data-c1-edit-item="${esc(item.id)}">编辑详细信息</button>
-              ${item.status === 'unopened'
-                ? `<button type="button" class="btn btn-soft btn-sm" data-c1-open-today="${esc(item.id)}">今日开封</button>`
-                : ''}
-              <button type="button" class="ghost-mini-btn" data-c1-remove-item="${esc(item.id)}" style="color:var(--danger);border-color:rgba(180,75,75,0.28);margin-left:auto;">删掉这 1 ${esc(unit)}</button>
-            </div>
-          </div>
+          ${(() => {
+            const allowed = getAllowedC1Statuses(item);
+            return `
+              <div class="stack-sm" style="margin-top:10px;">
+                <div class="row-between">
+                  <span style="font-size:12px;color:var(--text-tertiary);">快速改状态</span>
+                  ${!allowed.unopened ? `<span style="font-size:11px;color:var(--text-tertiary);">已填开封日期，不可改为未开封</span>` : ''}
+                </div>
+                <div class="segmented">
+                  <button type="button" class="seg-btn ${item.status === 'unrecorded' ? 'is-active' : ''}" data-c1-set-status="${esc(item.id)}:unrecorded" ${allowed.unrecorded ? '' : 'disabled'}>未记录</button>
+                  <button type="button" class="seg-btn ${item.status === 'unopened' ? 'is-active' : ''}" data-c1-set-status="${esc(item.id)}:unopened" ${allowed.unopened ? '' : 'disabled'}>未开封</button>
+                  <button type="button" class="seg-btn ${item.status === 'in_use' ? 'is-active' : ''}" data-c1-set-status="${esc(item.id)}:in_use">使用中</button>
+                  <button type="button" class="seg-btn ${item.status === 'used_up' ? 'is-active' : ''}" data-c1-mark-usedup="${esc(item.id)}">已用完</button>
+                </div>
+                <div class="row-between" style="margin-top:6px;gap:8px;">
+                  <button type="button" class="btn btn-secondary btn-sm" data-c1-edit-item="${esc(item.id)}">编辑详细信息</button>
+                  ${item.status === 'unopened'
+                    ? `<button type="button" class="btn btn-soft btn-sm" data-c1-open-today="${esc(item.id)}">今日开封</button>`
+                    : ''}
+                  <button type="button" class="ghost-mini-btn" data-c1-remove-item="${esc(item.id)}" style="color:var(--danger);border-color:rgba(180,75,75,0.28);margin-left:auto;">删掉这 1 ${esc(unit)}</button>
+                </div>
+              </div>
+            `;
+          })()}
         ` : ''}
       </div>
     `;
@@ -566,11 +570,46 @@ function bindDetailEvents(prod, sum, unit) {
     });
   });
 
+  mainEl.querySelectorAll('[data-c1-expiry-help]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const it = state.items.find((x) => x.id === btn.dataset.c1ExpiryHelp);
+      if (!it) return;
+      const dual = describeC1ItemDualExpiry(it);
+      sheet.open({
+        title: '有效期计算详情',
+        bodyHtml: `
+          <div class="stack">
+            <div class="card">
+              <div class="stack-sm" style="font-size:13px;">
+                <div><span class="muted-note">生产日期：</span>${esc(it.manufactureDate || '未填')} ｜ <span class="muted-note">未开封保质期：</span>${it.unopenedShelfMonths ? `${it.unopenedShelfMonths} 个月` : '未填'}</div>
+                <div><span class="muted-note">开封日期：</span>${esc(it.openedDate || '未填')} ｜ <span class="muted-note">开封后期限：</span>${it.paoMonths ? `${it.paoMonths} 个月` : '未填'}</div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="stack-sm" style="font-size:13px;">
+                <div>• 未开封推算：${dual.unopened.date ? `<strong>${esc(dual.unopened.date)}</strong>（${esc(dual.unopened.formula)}）` : esc(dual.unopened.missingHint || '未填写生产日期或未开封保质期')}</div>
+                <div>• 开封后推算：${dual.opened.date ? `<strong>${esc(dual.opened.date)}</strong>（${esc(dual.opened.formula)}）` : esc(dual.opened.missingHint || '未填写开封日期或 PAO')}</div>
+                <div>• 确认到期日：<strong>${it.confirmedExpiryDate ? esc(it.confirmedExpiryDate) : '未手动确认'}</strong></div>
+              </div>
+            </div>
+            <div class="form-banner-info">未开封与开封后分别独立推算、互不覆盖，也不会自动取较早日期。</div>
+          </div>
+        `,
+      });
+    });
+  });
+
   mainEl.querySelectorAll('[data-c1-set-status]').forEach((btn) => {
     btn.addEventListener('click', () => {
+      if (btn.disabled) return;
       const [id, nextStatus] = btn.dataset.c1SetStatus.split(':');
       const it = state.items.find((x) => x.id === id);
       if (!it) return;
+      const allowed = getAllowedC1Statuses(it);
+      if (!allowed[nextStatus]) {
+        toast('已有相关记录或开封日期时，不能切换为该状态');
+        return;
+      }
       it.status = nextStatus;
       toast(`已切换为「${C1_ITEM_STATUSES[nextStatus]?.label || nextStatus}」`);
       render();
@@ -816,12 +855,14 @@ function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = fa
         </div>
       </div>
 
-      <div class="form-banner-info" data-dual-preview style="margin-top:8px;font-size:12px;"></div>
-
       <div class="field" style="margin-top:8px;">
-        <label>用户确认到期日（选填，不自动覆盖）</label>
+        <div class="row-between" style="gap:6px;">
+          <label style="margin:0;">用户确认到期日（选填）</label>
+          <button type="button" class="help-icon-btn" data-toggle-dual-help aria-label="查看推算依据">?</button>
+        </div>
+        <div class="form-banner-info" data-dual-preview style="display:none;font-size:12px;"></div>
         <input class="input" type="date" data-df="confirmedExpiryDate" value="${esc(draft.confirmedExpiryDate)}" />
-        <div class="row-wrap" style="margin-top:6px;">
+        <div class="row-wrap" style="margin-top:4px;">
           <button type="button" class="btn btn-soft btn-sm" data-adopt-unopened>采纳未开封推算</button>
           <button type="button" class="btn btn-soft btn-sm" data-adopt-opened>采纳开封后推算</button>
         </div>
@@ -856,6 +897,7 @@ function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = fa
 
 function bindDraftExpiryHelpers(box, draft) {
   const previewEl = box.querySelector('[data-dual-preview]');
+  const toggleHelpBtn = box.querySelector('[data-toggle-dual-help]');
   const btnUnopened = box.querySelector('[data-adopt-unopened]');
   const btnOpened = box.querySelector('[data-adopt-opened]');
   const confInput = box.querySelector('[data-df="confirmedExpiryDate"]');
@@ -863,6 +905,11 @@ function bindDraftExpiryHelpers(box, draft) {
   const shelfInput = box.querySelector('[data-df="unopenedShelfMonths"]');
   const openInput = box.querySelector('[data-df="openedDate"]');
   const paoInput = box.querySelector('[data-df="paoMonths"]');
+
+  toggleHelpBtn?.addEventListener('click', () => {
+    if (!previewEl) return;
+    previewEl.style.display = previewEl.style.display === 'none' ? 'block' : 'none';
+  });
 
   const readVal = (el, fallback) => (el ? String(el.value || '').trim() : String(fallback || '').trim());
 

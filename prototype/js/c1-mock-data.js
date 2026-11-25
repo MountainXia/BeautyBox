@@ -368,6 +368,30 @@ export function describeC1ItemDualExpiry(item) {
   return deriveDualComputedExpiry(item);
 }
 
+/**
+ * 校验单个产品可选的状态流转（防止逻辑矛盾）：
+ * - 已有开封日期 -> 不可选「未记录」或「未开封」
+ * - 已有任意详细信息或已脱离未记录 -> 不可回退为「未记录」
+ */
+export function getAllowedC1Statuses(item) {
+  const hasOpened = Boolean(item?.openedDate);
+  const hasDetails = Boolean(
+    item?.manufactureDate ||
+      item?.unopenedShelfMonths ||
+      item?.openedDate ||
+      item?.paoMonths ||
+      item?.confirmedExpiryDate ||
+      (item?.purchasePriceMinor !== null && item?.purchasePriceMinor !== undefined && item?.purchasePriceMinor !== '') ||
+      item?.acquisitionMethod,
+  );
+  return {
+    unrecorded: !hasOpened && !hasDetails && item?.status === 'unrecorded',
+    unopened: !hasOpened,
+    in_use: true,
+    used_up: true,
+  };
+}
+
 export function formatC1Price(minor, currencyCode = 'CNY') {
   if (minor === null || minor === undefined || minor === '') return '';
   if (CURRENCIES[currencyCode]) return formatMinor(minor, currencyCode, { showCode: false });
