@@ -14,14 +14,20 @@ import {
 } from '../currency.js';
 import {
   EXPIRY_BASIS_LABELS,
-  computeExpiryCandidates,
+  deriveDualComputedExpiry,
   expiryStatus,
   missingExpiryInputs,
   resolveExpiry,
   todayStr,
 } from '../expiry.js';
 import { getSampleArtworkOptions } from '../assets.js';
-import { ITEM_STATUSES, isHeldStatus } from '../store.js';
+import {
+  ACQUISITION_PRESETS,
+  ITEM_STATUSES,
+  getItemAcquisitionDisplay,
+  isHeldStatus,
+  normalizeAcquisitionMethod,
+} from '../store.js';
 import { recordDiagnostic } from '../diagnostics.js';
 import {
   esc,
@@ -413,8 +419,9 @@ function renderItemCard(item, today, nearDays) {
   const statusObj = ITEM_STATUSES[item.status] || { label: item.status, held: false };
   const resolved = resolveExpiry(item);
   const expSt = expiryStatus(resolved, today, nearDays);
-  const candidates = computeExpiryCandidates(item);
-  const missingHints = missingExpiryInputs(item);
+  const dual = deriveDualComputedExpiry(item);
+  const acqLabel = getItemAcquisitionDisplay(item);
+  const hasBothDiff = Boolean(dual.unopened.date && dual.opened.date && dual.unopened.date !== dual.opened.date);
 
   return `
     <div class="card">
@@ -429,14 +436,14 @@ function renderItemCard(item, today, nearDays) {
 
       <div class="divider"></div>
 
-      <!-- 金额展示 -->
+      <!-- 金额与获得方式展示 -->
       <div class="row-between" style="font-size:13px;">
-        <span class="muted-note">购买价格 / 渠道</span>
+        <span class="muted-note">购买价格 / 获得方式</span>
         <span style="font-weight:700;">
           ${item.purchasePriceMinor !== null && item.purchasePriceMinor !== undefined
             ? `${esc(formatMinor(item.purchasePriceMinor, item.currencyCode, { showCode: true }))}`
             : '未填写金额'}
-          ${item.purchaseChannel ? ` · ${esc(item.purchaseChannel)}` : ''}
+          ${acqLabel ? ` · ${esc(acqLabel)}` : ''}
         </span>
       </div>
       ${item.purchasePriceMinor !== null && item.purchasePriceMinor !== undefined
@@ -454,19 +461,26 @@ function renderItemCard(item, today, nearDays) {
         </div>
       </div>
 
-      <!-- 完整区分有效期字段 -->
+      <!-- 完整区分有效期字段（未开封与开封后分别独立推算、分别展示） -->
       <div class="card-muted" style="margin-top:10px;font-size:12px;">
-        <div style="font-weight:700;margin-bottom:4px;">有效期明细（严格不按品类猜测）</div>
+        <div style="font-weight:700;margin-bottom:4px;">有效期明细（未开封 / 开封后独立推算，不按品类猜测）</div>
         <div>购买日期：${esc(item.purchaseDate || '未填')}</div>
         <div>生产日期：${esc(item.manufactureDate || '未填')} ｜ 未开封保质期：${item.unopenedShelfMonths ? `${item.unopenedShelfMonths} 个月` : '未填'}</div>
         <div>开封日期：${esc(item.openedDate || '未填')} ｜ 开封后使用期限（PAO）：${item.paoMonths ? `${item.paoMonths} 个月` : '未填'}</div>
-        ${candidates.length > 0
-          ? `<div style="margin-top:4px;color:var(--text-secondary);">系统推算：${candidates.map((c) => `${c.date}（${c.label}）`).join('；')}</div>`
-          : `<div style="margin-top:4px;color:var(--text-tertiary);">系统推算：无（${EXPIRY_BASIS_LABELS.none}）</div>`}
-        ${missingHints.length > 0
-          ? `<div style="margin-top:3px;color:var(--amber);">${missingHints.map(esc).join('；')}</div>`
+        <div style="margin-top:5px;color:var(--text-secondary);">
+          • 未开封有效期推算：${dual.unopened.date
+            ? `<strong>${esc(dual.unopened.date)}</strong>（${esc(dual.unopened.formula)}）`
+            : `<span style="color:${dual.unopened.missingHint ? 'var(--amber)' : 'var(--text-tertiary)'};">${esc(dual.unopened.missingHint || EXPIRY_BASIS_LABELS.none)}</span>`}
+        </div>
+        <div style="margin-top:3px;color:var(--text-secondary);">
+          • 开封后有效期推算：${dual.opened.date
+            ? `<strong>${esc(dual.opened.date)}</strong>（${esc(dual.opened.formula)}）`
+            : `<span style="color:${dual.opened.missingHint ? 'var(--amber)' : 'var(--text-tertiary)'};">${esc(dual.opened.missingHint || EXPIRY_BASIS_LABELS.none)}</span>`}
+        </div>
+        ${hasBothDiff
+          ? `<div style="margin-top:4px;color:var(--amber);">两项推算结果不同，系统分别展示且不自动取较早日期，请以您确认的到期日为准。</div>`
           : ''}
-        <div style="margin-top:4px;font-weight:600;">
+        <div style="margin-top:5px;font-weight:600;">
           用户确认到期日：${item.confirmedExpiryDate ? `${esc(item.confirmedExpiryDate)}（确认于 ${esc(item.expiryConfirmedAt?.slice(0, 10) || '')}）` : '尚未人工确认'}
         </div>
         ${resolved.needsReconfirm
@@ -727,6 +741,9 @@ export function openItemFormSheet({ store, sheet, toast, productId, itemId = nul
       ? minorToDecimalString(existing.purchasePriceMinor, existing.currencyCode)
       : '';
   const initialCurrency = existing?.currencyCode || 'CNY';
+  const acqInit = normalizeAcquisitionMethod(existing?.acquisitionMethod || existing?.purchaseChannel);
+  const initialAcqPreset = acqInit.acquisitionMethod?.preset || '';
+  const initialAcqCustom = acqInit.acquisitionMethod?.customText || '';
 
   const bodyHtml = `
     <form id="item-form" class="form-stack" novalidate>
@@ -774,9 +791,20 @@ export function openItemFormSheet({ store, sheet, toast, productId, itemId = nul
           <input class="input" type="date" name="purchaseDate" value="${esc(existing?.purchaseDate || '')}" />
         </div>
         <div class="field">
-          <label>购买渠道（默认不分享）</label>
-          <input class="input" name="purchaseChannel" placeholder="例如：专柜 / 免税店" value="${esc(existing?.purchaseChannel || '')}" />
+          <label>获得方式（默认不分享）</label>
+          <select class="select" name="acquisitionPreset" id="f-acq-preset">
+            <option value="" ${initialAcqPreset === '' ? 'selected' : ''}>未填写</option>
+            ${ACQUISITION_PRESETS.map(
+              (p) => `<option value="${esc(p)}" ${initialAcqPreset === p ? 'selected' : ''}>${esc(p)}</option>`,
+            ).join('')}
+            <option value="其他" ${initialAcqPreset === '其他' ? 'selected' : ''}>其他（自定义输入）</option>
+          </select>
         </div>
+      </div>
+
+      <div class="field" id="f-acq-custom-wrap" style="${initialAcqPreset === '其他' ? '' : 'display:none;'}">
+        <label>自定义获得方式</label>
+        <input class="input" name="acquisitionCustomText" id="f-acq-custom" placeholder="例如：日本药妆店 / 朋友拼单 / 直播间" value="${esc(initialAcqCustom)}" />
       </div>
 
       <div class="divider"></div>
@@ -808,9 +836,10 @@ export function openItemFormSheet({ store, sheet, toast, productId, itemId = nul
 
       <div class="field">
         <label>用户确认到期日（保存后不会被系统推算覆盖）</label>
-        <div class="row-wrap">
-          <input class="input" style="flex:1;" type="date" name="confirmedExpiryDate" id="f-confirmed" value="${esc(existing?.confirmedExpiryDate || '')}" />
-          <button type="button" class="btn btn-soft btn-sm" id="btn-adopt-computed">采纳推算日</button>
+        <input class="input" type="date" name="confirmedExpiryDate" id="f-confirmed" value="${esc(existing?.confirmedExpiryDate || '')}" />
+        <div class="row-wrap" style="margin-top:6px;">
+          <button type="button" class="btn btn-soft btn-sm" id="btn-adopt-unopened">采纳未开封推算</button>
+          <button type="button" class="btn btn-soft btn-sm" id="btn-adopt-opened">采纳开封后推算</button>
         </div>
       </div>
 
@@ -832,6 +861,17 @@ export function openItemFormSheet({ store, sheet, toast, productId, itemId = nul
       const openEl = body.querySelector('#f-opened');
       const paoEl = body.querySelector('#f-pao');
       const confEl = body.querySelector('#f-confirmed');
+      const acqPresetEl = body.querySelector('#f-acq-preset');
+      const acqCustomWrap = body.querySelector('#f-acq-custom-wrap');
+      const adoptUnopenedBtn = body.querySelector('#btn-adopt-unopened');
+      const adoptOpenedBtn = body.querySelector('#btn-adopt-opened');
+
+      const syncAcqCustomVisibility = () => {
+        if (!acqPresetEl || !acqCustomWrap) return;
+        acqCustomWrap.style.display = acqPresetEl.value === '其他' ? '' : 'none';
+      };
+      acqPresetEl?.addEventListener('change', syncAcqCustomVisibility);
+      syncAcqCustomVisibility();
 
       const updateCurrencyHint = () => {
         curHint.textContent = describePrecision(curSelect.value);
@@ -845,40 +885,57 @@ export function openItemFormSheet({ store, sheet, toast, productId, itemId = nul
         paoMonths: /^\d+$/.test(paoEl.value) ? Number.parseInt(paoEl.value, 10) : null,
       });
 
-      let latestSingleComputed = null;
+      let latestDual = deriveDualComputedExpiry(getDraftDates());
       const updateExpiryPreview = () => {
         const draft = getDraftDates();
-        const cands = computeExpiryCandidates(draft);
-        const missing = missingExpiryInputs(draft);
-        latestSingleComputed = cands.length === 1 ? cands[0].date : (cands.length === 2 && cands[0].date === cands[1].date ? cands[0].date : null);
+        latestDual = deriveDualComputedExpiry(draft);
         const lines = [];
-        if (cands.length > 0) {
-          lines.push(`系统推算：${cands.map((c) => `${c.date}（${c.label}）`).join('；')}`);
+        if (latestDual.unopened.date) {
+          lines.push(`未开封有效期推算：${latestDual.unopened.date}（${latestDual.unopened.formula}）`);
         } else {
-          lines.push('系统推算：当前输入不足，不进行推算或猜测。');
+          lines.push(`未开封有效期推算：${latestDual.unopened.missingHint || '未填写生产日期与未开封保质期'}`);
         }
-        if (cands.length === 2 && cands[0].date !== cands[1].date) {
-          lines.push('注意：未开封与开封后两个推算日期不一致，请由您手动确认最终到期日。');
+        if (latestDual.opened.date) {
+          lines.push(`开封后有效期推算：${latestDual.opened.date}（${latestDual.opened.formula}）`);
+        } else {
+          lines.push(`开封后有效期推算：${latestDual.opened.missingHint || '未填写开封日期与 PAO'}`);
         }
-        if (missing.length > 0) lines.push(...missing);
+        if (latestDual.unopened.date && latestDual.opened.date && latestDual.unopened.date !== latestDual.opened.date) {
+          lines.push('两者推算结果不一致，系统分别独立保留，不自动取较早日期，也不会覆盖您的确认到期日。');
+        }
+        if (adoptUnopenedBtn) {
+          adoptUnopenedBtn.disabled = !latestDual.unopened.date;
+          adoptUnopenedBtn.textContent = latestDual.unopened.date
+            ? `采纳未开封 (${latestDual.unopened.date})`
+            : '采纳未开封推算';
+        }
+        if (adoptOpenedBtn) {
+          adoptOpenedBtn.disabled = !latestDual.opened.date;
+          adoptOpenedBtn.textContent = latestDual.opened.date
+            ? `采纳开封后 (${latestDual.opened.date})`
+            : '采纳开封后推算';
+        }
         previewEl.innerHTML = lines.map((l) => `<div>${esc(l)}</div>`).join('');
       };
       [mfgEl, shelfEl, openEl, paoEl].forEach((el) => el.addEventListener('input', updateExpiryPreview));
       updateExpiryPreview();
 
-      body.querySelector('#btn-adopt-computed')?.addEventListener('click', () => {
-        if (latestSingleComputed) {
-          confEl.value = latestSingleComputed;
-          toast(`已填入推算到期日 ${latestSingleComputed}`);
-        } else {
-          const cands = computeExpiryCandidates(getDraftDates());
-          if (cands.length > 0) {
-            confEl.value = cands[0].date;
-            toast(`存在多个推算日，已暂填 ${cands[0].date}，请按实际标签确认`);
-          } else {
-            toast('当前缺少推算要素，无法自动填充');
-          }
+      adoptUnopenedBtn?.addEventListener('click', () => {
+        if (!latestDual.unopened.date) {
+          toast('请先填写生产日期与未开封保质期（月）');
+          return;
         }
+        confEl.value = latestDual.unopened.date;
+        toast(`已填入未开封推算日 ${latestDual.unopened.date}`);
+      });
+
+      adoptOpenedBtn?.addEventListener('click', () => {
+        if (!latestDual.opened.date) {
+          toast('请先填写开封日期与 PAO（月）');
+          return;
+        }
+        confEl.value = latestDual.opened.date;
+        toast(`已填入开封后推算日 ${latestDual.opened.date}`);
       });
 
       form.addEventListener('submit', (e) => {
@@ -894,7 +951,8 @@ export function openItemFormSheet({ store, sheet, toast, productId, itemId = nul
             currencyCode: fd.get('currencyCode'),
             purchasePriceInput: fd.get('purchasePriceInput'),
             purchaseDate: fd.get('purchaseDate'),
-            purchaseChannel: fd.get('purchaseChannel'),
+            acquisitionPreset: fd.get('acquisitionPreset'),
+            acquisitionCustomText: fd.get('acquisitionCustomText'),
             manufactureDate: fd.get('manufactureDate'),
             unopenedShelfMonths: fd.get('unopenedShelfMonths'),
             openedDate: fd.get('openedDate'),

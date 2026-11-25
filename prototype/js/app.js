@@ -67,6 +67,7 @@ const uiState = {
     search: '',
     styleFilter: 'all',
     selectedLookId: null,
+    showTrash: false,
   },
   daily: {
     subTab: 'routine',
@@ -102,7 +103,10 @@ function renderTabBar() {
       const next = btn.dataset.tab;
       if (uiState.activeTab === next) {
         if (next === 'box') uiState.box.selectedProductId = null;
-        if (next === 'looks') uiState.looks.selectedLookId = null;
+        if (next === 'looks') {
+          uiState.looks.selectedLookId = null;
+          uiState.looks.showTrash = false;
+        }
       }
       uiState.activeTab = next;
       render();
@@ -170,7 +174,7 @@ function render({ preserveFocusId = null } = {}) {
 
   if (uiState.activeTab === 'home') {
     html = renderHomeView({ store, ctx, actions });
-    bindFn = (el) => bindHomeEvents(el, { store, actions });
+    bindFn = (el) => bindHomeEvents(el, { store, actions, sheet });
   } else if (uiState.activeTab === 'box') {
     html = renderBoxView({ store, viewState: uiState.box, ctx });
     bindFn = (el) => bindBoxEvents(el, { store, viewState: uiState.box, actions, sheet, dialog, toast });
@@ -238,9 +242,16 @@ function showOnboardingIfNeeded() {
   });
 }
 
-// 启动渲染，并异步从 IndexedDB 恢复用户已上传图片 Blob
+// 启动时检查回收站过期妆容（>= 7 天自动永久删除），再渲染并异步恢复 IndexedDB 图片 Blob
+const startupPurgePromise = store.purgeExpiredLooks();
 render();
 showOnboardingIfNeeded();
+startupPurgePromise.then(({ purgedCount }) => {
+  if (purgedCount > 0) {
+    render();
+    toast(`启动检查：已自动永久清理 ${purgedCount} 条到期回收站妆容`);
+  }
+});
 store.hydrateMedia().then(({ restored, missingIds }) => {
   if (restored > 0) render();
   if (missingIds.length > 0) {

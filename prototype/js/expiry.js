@@ -128,13 +128,94 @@ export function missingExpiryInputs(item) {
   return hints;
 }
 
+/**
+ * 独立推算未开封有效期与开封后有效期（TASK02.1-B）：
+ * - 未开封推算：生产日期 + 未开封保质期（月）
+ * - 开封后推算：开封日期 + PAO（月）
+ * 两者相互独立、分别返回，互不覆盖，缺项不猜测。
+ */
+export function deriveDualComputedExpiry(item) {
+  const hasMfg = isValidDate(item.manufactureDate);
+  const hasShelf = isPositiveIntMonths(item.unopenedShelfMonths);
+  const hasOpen = isValidDate(item.openedDate);
+  const hasPao = isPositiveIntMonths(item.paoMonths);
+
+  let unopenedMissing = null;
+  if (hasMfg && !hasShelf) unopenedMissing = '已填生产日期，缺少未开封保质期，暂不推算';
+  else if (!hasMfg && hasShelf) unopenedMissing = '已填未开封保质期，缺少生产日期，暂不推算';
+
+  let openedMissing = null;
+  if (hasOpen && !hasPao) openedMissing = '已填开封日期，缺少 PAO，暂不推算';
+  else if (!hasOpen && hasPao) openedMissing = '已填 PAO，缺少开封日期，暂不推算';
+
+  return {
+    unopened: hasMfg && hasShelf
+      ? {
+          basis: 'unopened',
+          label: EXPIRY_BASIS_LABELS.unopened,
+          date: addMonths(item.manufactureDate, item.unopenedShelfMonths),
+          formula: `${item.manufactureDate} + ${item.unopenedShelfMonths} 个月`,
+          missingHint: null,
+        }
+      : {
+          basis: 'unopened',
+          label: EXPIRY_BASIS_LABELS.unopened,
+          date: null,
+          formula: null,
+          missingHint: unopenedMissing,
+        },
+    opened: hasOpen && hasPao
+      ? {
+          basis: 'opened',
+          label: EXPIRY_BASIS_LABELS.opened,
+          date: addMonths(item.openedDate, item.paoMonths),
+          formula: `${item.openedDate} + ${item.paoMonths} 个月`,
+          missingHint: null,
+        }
+      : {
+          basis: 'opened',
+          label: EXPIRY_BASIS_LABELS.opened,
+          date: null,
+          formula: null,
+          missingHint: openedMissing,
+        },
+  };
+}
+
 /** 对应数据库 computed_expiry_date + expiry_basis 两列 */
 export function deriveComputedExpiry(item) {
+  const dual = deriveDualComputedExpiry(item);
   const c = computeExpiryCandidates(item);
-  if (c.length === 0) return { computedExpiryDate: null, expiryBasis: 'none' };
-  if (c.length === 1) return { computedExpiryDate: c[0].date, expiryBasis: c[0].basis };
-  if (c[0].date === c[1].date) return { computedExpiryDate: c[0].date, expiryBasis: 'both' };
-  return { computedExpiryDate: null, expiryBasis: 'conflict' };
+  if (c.length === 0) {
+    return {
+      computedExpiryDate: null,
+      expiryBasis: 'none',
+      unopenedComputedExpiry: null,
+      openedComputedExpiry: null,
+    };
+  }
+  if (c.length === 1) {
+    return {
+      computedExpiryDate: c[0].date,
+      expiryBasis: c[0].basis,
+      unopenedComputedExpiry: dual.unopened.date,
+      openedComputedExpiry: dual.opened.date,
+    };
+  }
+  if (c[0].date === c[1].date) {
+    return {
+      computedExpiryDate: c[0].date,
+      expiryBasis: 'both',
+      unopenedComputedExpiry: dual.unopened.date,
+      openedComputedExpiry: dual.opened.date,
+    };
+  }
+  return {
+    computedExpiryDate: null,
+    expiryBasis: 'conflict',
+    unopenedComputedExpiry: dual.unopened.date,
+    openedComputedExpiry: dual.opened.date,
+  };
 }
 
 /**

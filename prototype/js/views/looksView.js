@@ -7,6 +7,7 @@ import { buildCategoryPlaceholderUrl, getSampleArtworkOptions } from '../assets.
 import { todayStr } from '../expiry.js';
 import { isHeldStatus } from '../store.js';
 import { recordDiagnostic } from '../diagnostics.js';
+import { buildShareCardPayload, renderShareCardToPng } from '../shareCard.js';
 import {
   esc,
   formatBytes,
@@ -18,21 +19,30 @@ import {
 } from '../components/ui.js';
 
 export function renderLooksView({ store, viewState, ctx }) {
+  if (viewState.showTrash) {
+    return renderLookTrashView({ store, ctx });
+  }
+
   if (viewState.selectedLookId) {
-    const look = store.state.looks.find((l) => l.id === viewState.selectedLookId);
+    const look = store.state.looks.find((l) => l.id === viewState.selectedLookId && !l.deletedAt);
     if (look) return renderLookDetail({ store, look, ctx });
     viewState.selectedLookId = null;
   }
 
+  const activeLooks = store.getActiveLooks();
+  const trashCount = store.getTrashLooks().length;
+
   ctx.setHeader({
     title: '妆容',
-    subtitle: `${store.state.looks.filter((l) => !l.archivedAt).length} 篇妆容记录`,
-    actionsHtml: `<button type="button" class="btn btn-primary btn-sm" data-looks-add="1">+ 记妆容</button>`,
+    subtitle: `${activeLooks.length} 篇妆容记录${trashCount > 0 ? ` · 回收站 ${trashCount}` : ''}`,
+    actionsHtml: `
+      <button type="button" class="btn btn-secondary btn-sm" data-looks-open-trash="1">回收站${trashCount > 0 ? ` (${trashCount})` : ''}</button>
+      <button type="button" class="btn btn-primary btn-sm" data-looks-add="1">+ 记妆容</button>
+    `,
   });
 
   const q = (viewState.search || '').trim().toLowerCase();
   const styleFilter = viewState.styleFilter || 'all';
-  const activeLooks = store.state.looks.filter((l) => !l.archivedAt);
   const styles = [...new Set(activeLooks.map((l) => l.style).filter(Boolean))];
 
   const filtered = activeLooks
@@ -104,6 +114,55 @@ export function renderLooksView({ store, viewState, ctx }) {
                 .join('')}
             </div>
           `}
+    </div>
+  `;
+}
+
+function renderLookTrashView({ store, ctx }) {
+  const trashRows = store.getTrashLooks();
+  ctx.setHeader({
+    title: '妆容回收站',
+    subtitle: `${trashRows.length} 篇待清理 · 默认保留 7 天`,
+    backBtnAttr: 'data-looks-trash-back="1"',
+  });
+
+  return `
+    <div class="stack">
+      <div class="form-banner-info">
+        删除的妆容默认保留 7 天，7 天内可随时恢复；到期后会在应用启动时自动永久删除。删除妆容不会连带删除产品主档、持有实例或其他历史记录，关联照片仅在无其他引用时清理。
+      </div>
+
+      ${trashRows.length === 0
+        ? renderEmptyState({
+            icon: '🗑',
+            title: '回收站是空的',
+            desc: '删除的妆容会暂存这里 7 天，期间可以恢复，也可以提前永久删除。',
+            actionLabel: '返回妆容列表',
+            actionAttr: 'data-looks-trash-back="1"',
+          })
+        : trashRows
+            .map(({ look, remainingDays }) => {
+              const coverUrl = (look.coverAssetId && store.getAssetUrl(look.coverAssetId)) || buildCategoryPlaceholderUrl('妆容');
+              return `
+                <div class="card">
+                  <div class="row" style="gap:12px;align-items:flex-start;">
+                    <img src="${coverUrl}" alt="${esc(look.name)}" style="width:68px;height:68px;object-fit:cover;border-radius:12px;flex-shrink:0;" />
+                    <div style="flex:1;min-width:0;">
+                      <div style="font-weight:700;font-size:15px;">${esc(look.name)}</div>
+                      <div class="muted-note" style="margin-top:2px;">妆容日期：${esc(look.lookDate)} ｜ 删除于 ${esc((look.deletedAt || '').slice(0, 10))}</div>
+                      <div style="margin-top:6px;">
+                        <span class="pill pill-amber">剩余 ${remainingDays} 天自动清理</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="row-wrap" style="margin-top:10px;justify-content:flex-end;">
+                    <button type="button" class="btn btn-soft btn-sm" data-look-restore="${esc(look.id)}">恢复妆容</button>
+                    <button type="button" class="btn btn-danger btn-sm" data-look-purge="${esc(look.id)}">永久删除</button>
+                  </div>
+                </div>
+              `;
+            })
+            .join('')}
     </div>
   `;
 }
@@ -254,6 +313,17 @@ function renderLookDetail({ store, look, ctx }) {
                 .join('')}
             </div>
           `}
+      </div>
+
+      <!-- 删除进入回收站 -->
+      <div class="card">
+        <div class="row-between" style="gap:10px;">
+          <div style="flex:1;">
+            <div style="font-weight:700;font-size:14px;">删除这篇妆容</div>
+            <div class="muted-note">删除后将移入回收站保留 7 天，不会影响关联的产品与持有实例。</div>
+          </div>
+          <button type="button" class="btn btn-danger btn-sm" data-looks-soft-delete="${esc(look.id)}">移入回收站</button>
+        </div>
       </div>
     </div>
   `;
@@ -768,10 +838,25 @@ function openSharePreviewSheet({ store, sheet, toast, lookId }) {
 
         <div class="share-card-footer">
           <span>妆匣 BeautyBox · 本地生成</span>
-          <span>价格/渠道/私人备注已隐藏</span>
+          <span>价格/获得方式/私人备注已隐藏</span>
         </div>
       </div>
     `;
+  };
+
+  const coverAsset = look.coverAssetId
+    ? store.state.mediaAssets.find((a) => a.id === look.coverAssetId) || null
+    : null;
+  let generatedBlobUrl = '';
+  let generatedFile = null;
+  let generatedFileName = 'beautybox-share.png';
+  let renderSeq = 0;
+
+  const revokeGeneratedUrl = () => {
+    if (generatedBlobUrl) {
+      URL.revokeObjectURL(generatedBlobUrl);
+      generatedBlobUrl = '';
+    }
   };
 
   sheet.open({
@@ -779,7 +864,7 @@ function openSharePreviewSheet({ store, sheet, toast, lookId }) {
     bodyHtml: `
       <div class="stack">
         <div class="form-banner-info">
-          <strong>隐私白名单保护：</strong>仅导出勾选的展示字段。购买价格、购买渠道、私人备注与肌肤日记默认排除，绝不随分享泄露。
+          <strong>隐私白名单保护：</strong>仅导出勾选的展示字段。购买价格、获得方式、私人备注与肌肤日记默认排除，绝不随分享泄露。
         </div>
 
         <div class="segmented">
@@ -798,33 +883,149 @@ function openSharePreviewSheet({ store, sheet, toast, lookId }) {
             <label><input type="checkbox" data-share-opt="showRating" checked /> 星级</label>
             <label><input type="checkbox" data-share-opt="showWear" ${wearList.length > 0 ? 'checked' : ''} /> 持妆简报</label>
           </div>
-          <div class="muted-note" style="margin-top:8px;">默认强制关闭：购买价格、购买渠道、私人备注、肌肤日记</div>
+          <div class="muted-note" style="margin-top:8px;">默认强制关闭：购买价格、获得方式、私人备注、肌肤日记</div>
         </div>
 
         <div id="share-preview-box">${renderPreview()}</div>
 
-        <button type="button" class="btn btn-primary btn-block" id="btn-mock-save-share">保存分享卡片（原型模拟提示）</button>
-        <div class="muted-note" style="text-align:center;">注：真实系统分享面板（UIActivityViewController）与相册写入需 Mac/Xcode 与真机实测。</div>
+        <div id="share-save-error" class="form-banner-error" style="display:none;"></div>
+
+        <div class="card" id="share-png-card">
+          <div class="section-header" style="margin-bottom:8px;">
+            <h3 class="section-title" style="font-size:14px;">已生成分享图片（PNG）</h3>
+            <span class="pill pill-sage" id="share-png-status">生成中...</span>
+          </div>
+          <div id="share-png-result" class="muted-note">正在本地渲染高清 PNG 分享卡...</div>
+        </div>
+
+        <div class="stack-sm">
+          <button type="button" class="btn btn-primary btn-block" id="btn-save-share-card" disabled>保存 / 分享图片到相册</button>
+          <button type="button" class="btn btn-secondary btn-block" id="btn-download-share-png" disabled>下载 PNG 图片</button>
+        </div>
+        <div class="muted-note" style="text-align:center;">iPhone Safari 可点击「保存 / 分享图片到相册」呼出系统“存储图像”，或直接长按上方 PNG 图片存储到「照片」。</div>
       </div>
     `,
+    onClose: revokeGeneratedUrl,
     onMount: (body) => {
       const box = body.querySelector('#share-preview-box');
+      const errBox = body.querySelector('#share-save-error');
+      const pngStatus = body.querySelector('#share-png-status');
+      const pngResult = body.querySelector('#share-png-result');
+      const shareBtn = body.querySelector('#btn-save-share-card');
+      const downloadBtn = body.querySelector('#btn-download-share-png');
+
+      const triggerDownload = () => {
+        if (!generatedBlobUrl) return false;
+        const a = document.createElement('a');
+        a.href = generatedBlobUrl;
+        a.download = generatedFileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        return true;
+      };
+
+      const rebuildPng = async () => {
+        const mySeq = ++renderSeq;
+        errBox.style.display = 'none';
+        shareBtn.disabled = true;
+        downloadBtn.disabled = true;
+        pngStatus.textContent = '生成中...';
+        pngStatus.className = 'pill';
+
+        const payload = buildShareCardPayload({ look, items, wearList, shareOpts });
+        const coverUrl = look.coverAssetId ? store.getAssetUrl(look.coverAssetId) : null;
+        const res = await renderShareCardToPng({ payload, coverAsset, coverUrl });
+        if (mySeq !== renderSeq) return;
+
+        if (!res.ok) {
+          pngStatus.textContent = '生成失败';
+          pngStatus.className = 'pill pill-danger';
+          pngResult.innerHTML = `<div style="color:var(--danger);">${esc(res.error)}</div>`;
+          showFormError(errBox, res.error, toast);
+          return;
+        }
+
+        revokeGeneratedUrl();
+        generatedBlobUrl = URL.createObjectURL(res.blob);
+        generatedFile = res.file;
+        generatedFileName = res.fileName;
+
+        pngStatus.textContent = `已就绪 · ${formatBytes(res.blob.size)}`;
+        pngStatus.className = 'pill pill-sage';
+        pngResult.innerHTML = `
+          <img id="share-generated-png" src="${generatedBlobUrl}" alt="生成的白名单分享图" style="width:100%;height:auto;border-radius:14px;display:block;border:1px solid var(--border-subtle);" />
+          <div class="muted-note" style="margin-top:6px;text-align:center;">长按上方图片可直接在 iPhone Safari 选择“存储到照片”</div>
+        `;
+        shareBtn.disabled = false;
+        downloadBtn.disabled = false;
+      };
+
       body.querySelectorAll('[data-share-type]').forEach((btn) => {
         btn.addEventListener('click', () => {
           shareOpts.cardType = btn.dataset.shareType;
           body.querySelectorAll('[data-share-type]').forEach((b) => b.classList.toggle('is-active', b === btn));
           box.innerHTML = renderPreview();
+          rebuildPng();
         });
       });
       body.querySelectorAll('[data-share-opt]').forEach((cb) => {
         cb.addEventListener('change', () => {
           shareOpts[cb.dataset.shareOpt] = cb.checked;
           box.innerHTML = renderPreview();
+          rebuildPng();
         });
       });
-      body.querySelector('#btn-mock-save-share')?.addEventListener('click', () => {
-        toast('已按白名单字段生成分享卡预览（正式相册写入需 iOS 真机）');
+
+      shareBtn?.addEventListener('click', () => {
+        errBox.style.display = 'none';
+        if (!generatedBlobUrl) {
+          toast('分享图片尚未生成完成，请稍候');
+          return;
+        }
+        const canNativeFileShare =
+          generatedFile &&
+          typeof navigator !== 'undefined' &&
+          typeof navigator.share === 'function' &&
+          (typeof navigator.canShare !== 'function' || navigator.canShare({ files: [generatedFile] }));
+
+        if (canNativeFileShare) {
+          // 同步在点击手势内发起 navigator.share，避免 iOS Safari 判定丢失用户手势
+          navigator
+            .share({
+              files: [generatedFile],
+              title: `${look.name} · 妆匣 BeautyBox`,
+            })
+            .then(() => {
+              toast('已呼出系统分享面板（可选择“存储图像”保存到相册）');
+            })
+            .catch((err) => {
+              if (err?.name === 'AbortError') {
+                toast('已取消分享；您仍可长按上方 PNG 图片保存到相册');
+                return;
+              }
+              recordDiagnostic('share_card_native_share_failed', err, {
+                entityType: 'look_share_card',
+                cardType: shareOpts.cardType,
+              });
+              triggerDownload();
+              toast('系统分享未调起，已改为下载 PNG，也可直接长按上方图片存储');
+            });
+          return;
+        }
+
+        triggerDownload();
+        pngResult.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        toast('已生成并下载白名单分享 PNG（iPhone Safari 也可长按上方图片存储到照片）');
       });
+
+      downloadBtn?.addEventListener('click', () => {
+        if (triggerDownload()) {
+          toast(`已下载 ${generatedFileName}`);
+        }
+      });
+
+      rebuildPng();
     },
   });
 }
@@ -891,6 +1092,77 @@ export function bindLooksEvents(container, { store, viewState, actions, sheet, d
       sheet,
       toast,
       lookId: e.currentTarget.dataset.looksShare,
+    });
+  });
+
+  container.querySelector('[data-looks-open-trash]')?.addEventListener('click', () => {
+    viewState.showTrash = true;
+    viewState.selectedLookId = null;
+    actions.rerender();
+  });
+
+  container.querySelector('[data-looks-trash-back]')?.addEventListener('click', () => {
+    viewState.showTrash = false;
+    actions.rerender();
+  });
+
+  container.querySelector('[data-looks-soft-delete]')?.addEventListener('click', async (e) => {
+    const lookId = e.currentTarget.dataset.looksSoftDelete;
+    const look = store.state.looks.find((l) => l.id === lookId);
+    if (!look) return;
+    const ok = await dialog.confirm({
+      title: '移入回收站',
+      message: `确定要删除妆容「${look.name}」吗？删除后将移入回收站保留 7 天，7 天内可恢复，不会删除关联产品或持有实例。`,
+      confirmLabel: '移入回收站',
+      danger: true,
+    });
+    if (!ok) return;
+    const res = store.softDeleteLook(lookId);
+    if (!res.ok) {
+      toast(res.error || '删除失败');
+      return;
+    }
+    viewState.selectedLookId = null;
+    toast('已移入妆容回收站（保留 7 天）');
+    actions.rerender();
+  });
+
+  container.querySelectorAll('[data-look-restore]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const res = store.restoreLookFromTrash(el.dataset.lookRestore);
+      if (res.ok) {
+        toast('已恢复该妆容记录');
+        actions.rerender();
+      }
+    });
+  });
+
+  container.querySelectorAll('[data-look-purge]').forEach((el) => {
+    el.addEventListener('click', async () => {
+      const lookId = el.dataset.lookPurge;
+      const look = store.state.looks.find((l) => l.id === lookId);
+      if (!look) return;
+      const firstOk = await dialog.confirm({
+        title: '提前永久删除（第 1 步确认）',
+        message: `确定要提前永久删除妆容「${look.name}」吗？永久删除后将无法恢复。`,
+        confirmLabel: '继续确认',
+        danger: true,
+      });
+      if (!firstOk) return;
+      const secondOk = await dialog.confirm({
+        title: '不可撤销操作（第 2 次确认）',
+        message: `二次确认：即将永久清除「${look.name}」及关联持妆节点。关联产品与持有实例仍会保留；图片仅在无其他记录引用时才会清理。确认永久删除？`,
+        confirmLabel: '确认永久删除',
+        danger: true,
+      });
+      if (!secondOk) return;
+      const res = await store.permanentlyDeleteLook(lookId);
+      if (!res.ok) {
+        toast(res.error || '永久删除失败');
+        return;
+      }
+      toast('已永久删除该妆容');
+      actions.rerender();
     });
   });
 }

@@ -40,6 +40,61 @@ import { createSeedData } from './seedData.js';
 import { PrototypeSaveError, recordDiagnostic } from './diagnostics.js';
 
 export const STORAGE_KEY = 'beautybox_prototype_v1';
+export const LOOK_TRASH_RETENTION_DAYS = 7;
+
+export const ACQUISITION_PRESETS = Object.freeze([
+  '专柜',
+  '官方旗舰店',
+  '免税店',
+  '代购',
+  '集合店',
+  '二手/闲置购入',
+  '他人赠送',
+  '品牌赠品/小样',
+]);
+
+export function normalizeAcquisitionMethod(input) {
+  if (!input) return { acquisitionMethod: null, purchaseChannel: '' };
+  if (typeof input === 'object' && !Array.isArray(input)) {
+    const presetRaw = (input.preset || '').trim();
+    const customRaw = (input.customText || '').trim();
+    if (!presetRaw && !customRaw) return { acquisitionMethod: null, purchaseChannel: '' };
+    if (presetRaw === '其他') {
+      return {
+        acquisitionMethod: { preset: '其他', customText: customRaw },
+        purchaseChannel: customRaw || '其他',
+      };
+    }
+    if (ACQUISITION_PRESETS.includes(presetRaw)) {
+      return {
+        acquisitionMethod: { preset: presetRaw, customText: '' },
+        purchaseChannel: presetRaw,
+      };
+    }
+    const text = customRaw || presetRaw;
+    return {
+      acquisitionMethod: { preset: '其他', customText: text },
+      purchaseChannel: text,
+    };
+  }
+  const text = String(input).trim();
+  if (!text) return { acquisitionMethod: null, purchaseChannel: '' };
+  if (ACQUISITION_PRESETS.includes(text)) {
+    return { acquisitionMethod: { preset: text, customText: '' }, purchaseChannel: text };
+  }
+  return { acquisitionMethod: { preset: '其他', customText: text }, purchaseChannel: text };
+}
+
+export function getItemAcquisitionDisplay(item) {
+  if (!item) return '';
+  const m = item.acquisitionMethod;
+  if (m && typeof m === 'object') {
+    if (m.preset === '其他') return (m.customText || '').trim() || '其他';
+    return (m.preset || m.customText || '').trim();
+  }
+  if (typeof m === 'string' && m.trim()) return m.trim();
+  return (item.purchaseChannel || '').trim();
+}
 
 /** 视为“仍在持有”的实例状态（未用完、未丢弃、未转让） */
 export const ITEM_STATUSES = Object.freeze({
@@ -92,6 +147,7 @@ export function createEmptyState(prevSettings = {}) {
     settings: {
       onboardingDismissed: true,
       nearExpiryDays: prevSettings.nearExpiryDays ?? null,
+      homeSelectedCurrency: isSupportedCurrency(prevSettings.homeSelectedCurrency) ? prevSettings.homeSelectedCurrency : 'CNY',
       simulatedSubscription: prevSettings.simulatedSubscription || 'free',
       icloudEnabledMock: false,
       lastMockBackupAt: null,
@@ -131,16 +187,42 @@ export class PrototypeStore {
         if (raw) {
           const parsed = JSON.parse(raw);
           if (parsed && typeof parsed === 'object' && Array.isArray(parsed.products)) {
-            return parsed;
+            return this.normalizeState(parsed);
           }
         }
       } catch {
         // 损坏的模拟数据则重新使用默认演示数据
       }
     }
-    const seed = createSeedData();
+    const seed = this.normalizeState(createSeedData());
     this.saveRawState(seed);
     return seed;
+  }
+
+  /** 向后兼容旧版 localStorage 缓存字段，绝不清空用户已有记录 */
+  normalizeState(state) {
+    state.settings = state.settings && typeof state.settings === 'object' ? state.settings : {};
+    if (!isSupportedCurrency(state.settings.homeSelectedCurrency)) {
+      state.settings.homeSelectedCurrency = 'CNY';
+    }
+    if (!Array.isArray(state.productItems)) state.productItems = [];
+    for (const item of state.productItems) {
+      if (!item.acquisitionMethod && item.purchaseChannel) {
+        const norm = normalizeAcquisitionMethod(item.purchaseChannel);
+        item.acquisitionMethod = norm.acquisitionMethod;
+      }
+      if (item.unopenedComputedExpiry === undefined || item.openedComputedExpiry === undefined) {
+        const dual = deriveComputedExpiry(item);
+        item.unopenedComputedExpiry = dual.unopenedComputedExpiry;
+        item.openedComputedExpiry = dual.openedComputedExpiry;
+      }
+    }
+    if (!Array.isArray(state.looks)) state.looks = [];
+    for (const look of state.looks) {
+      if (look.deletedAt === undefined) look.deletedAt = null;
+      if (look.purgeAt === undefined) look.purgeAt = null;
+    }
+    return state;
   }
 
   saveRawState(state, entityType = 'state') {
@@ -518,6 +600,12 @@ export class PrototypeStore {
       };
       const computed = deriveComputedExpiry(draftDates);
       const confirmation = applyExpiryConfirmation(targetPrev, draftDates, now);
+      const acqInput = input.acquisitionMethod !== undefined
+        ? input.acquisitionMethod
+        : (input.acquisitionPreset !== undefined || input.acquisitionCustomText !== undefined)
+          ? { preset: input.acquisitionPreset, customText: input.acquisitionCustomText }
+          : input.purchaseChannel;
+      const acq = normalizeAcquisitionMethod(acqInput);
 
       const record = {
         id: targetPrev ? targetPrev.id : uid('item'),
@@ -525,11 +613,14 @@ export class PrototypeStore {
         purchasePriceMinor,
         currencyCode,
         purchaseDate: pd.value,
-        purchaseChannel: (input.purchaseChannel || '').trim(),
+        acquisitionMethod: acq.acquisitionMethod,
+        purchaseChannel: acq.purchaseChannel,
         manufactureDate: md.value,
         unopenedShelfMonths: sm.value,
         openedDate: od.value,
         paoMonths: pm.value,
+        unopenedComputedExpiry: computed.unopenedComputedExpiry,
+        openedComputedExpiry: computed.openedComputedExpiry,
         computedExpiryDate: computed.computedExpiryDate,
         expiryBasis: computed.expiryBasis,
         confirmedExpiryDate: confirmation.confirmedExpiryDate,
@@ -642,12 +733,18 @@ export class PrototypeStore {
         createdAt: now,
         updatedAt: now,
         archivedAt: null,
+        deletedAt: null,
+        purgeAt: null,
       };
 
       if (input.id) {
         const existing = this.state.looks.find((l) => l.id === input.id);
         if (!existing) return { ok: false, error: '妆容不存在' };
-        Object.assign(existing, look, { createdAt: existing.createdAt });
+        Object.assign(existing, look, {
+          createdAt: existing.createdAt,
+          deletedAt: existing.deletedAt || null,
+          purgeAt: existing.purgeAt || null,
+        });
         this.state.lookPhotos = this.state.lookPhotos.filter((lp) => lp.lookId !== lookId);
         this.state.lookProductItems = this.state.lookProductItems.filter((lpi) => lpi.lookId !== lookId);
       } else {
@@ -689,6 +786,138 @@ export class PrototypeStore {
 
       return { ok: true, look: this.state.looks.find((l) => l.id === lookId) };
     });
+  }
+
+  _toNowMs(now = new Date()) {
+    if (now instanceof Date) return now.getTime();
+    if (typeof now === 'number' && Number.isFinite(now)) return now;
+    const parsed = Date.parse(String(now));
+    return Number.isFinite(parsed) ? parsed : Date.now();
+  }
+
+  getActiveLooks() {
+    return this.state.looks.filter((l) => !l.archivedAt && !l.deletedAt);
+  }
+
+  getTrashLooks(now = new Date()) {
+    const nowMs = this._toNowMs(now);
+    const retentionMs = LOOK_TRASH_RETENTION_DAYS * 86400000;
+    return this.state.looks
+      .filter((l) => Boolean(l.deletedAt))
+      .map((l) => {
+        const purgeMs = Number.isFinite(Date.parse(l.purgeAt || ''))
+          ? Date.parse(l.purgeAt)
+          : Date.parse(l.deletedAt) + retentionMs;
+        const remainingMs = Math.max(0, purgeMs - nowMs);
+        const remainingDays = Math.max(0, Math.ceil(remainingMs / 86400000));
+        return { look: l, remainingDays, expired: nowMs >= purgeMs };
+      })
+      .sort((a, b) => String(b.look.deletedAt).localeCompare(String(a.look.deletedAt)));
+  }
+
+  softDeleteLook(lookId, now = new Date()) {
+    const look = this.state.looks.find((l) => l.id === lookId);
+    if (!look) return this.failValidation('look', 'id', '妆容不存在');
+    if (look.deletedAt) return { ok: true, look };
+    const nowMs = this._toNowMs(now);
+    const deletedIso = new Date(nowMs).toISOString();
+    const purgeIso = new Date(nowMs + LOOK_TRASH_RETENTION_DAYS * 86400000).toISOString();
+    return this.runPersistMutation('look', () => {
+      const target = this.state.looks.find((l) => l.id === lookId);
+      target.deletedAt = deletedIso;
+      target.purgeAt = purgeIso;
+      target.updatedAt = deletedIso;
+      return { ok: true, look: target };
+    });
+  }
+
+  restoreLookFromTrash(lookId) {
+    const look = this.state.looks.find((l) => l.id === lookId);
+    if (!look) return this.failValidation('look', 'id', '妆容不存在');
+    if (!look.deletedAt) return { ok: true, look };
+    const nowIso = new Date().toISOString();
+    return this.runPersistMutation('look', () => {
+      const target = this.state.looks.find((l) => l.id === lookId);
+      target.deletedAt = null;
+      target.purgeAt = null;
+      target.updatedAt = nowIso;
+      return { ok: true, look: target };
+    });
+  }
+
+  _collectLookAssetIds(lookId) {
+    const ids = new Set();
+    const look = this.state.looks.find((l) => l.id === lookId);
+    if (look?.coverAssetId) ids.add(look.coverAssetId);
+    for (const lp of this.state.lookPhotos) {
+      if (lp.lookId === lookId && lp.assetId) ids.add(lp.assetId);
+    }
+    for (const wr of this.state.wearReviews) {
+      if (wr.lookId === lookId && wr.assetId) ids.add(wr.assetId);
+    }
+    return [...ids];
+  }
+
+  /**
+   * 永久删除妆容：绝不删除 Product / ProductItem / 使用记录 / 日记，
+   * 仅当关联图片不再被任何其余记录（含回收站内其他妆容、产品照片等）引用时才清理。
+   */
+  async permanentlyDeleteLook(lookId) {
+    const look = this.state.looks.find((l) => l.id === lookId);
+    if (!look) return this.failValidation('look', 'id', '妆容不存在');
+    const candidateAssets = this._collectLookAssetIds(lookId);
+    const res = this.runPersistMutation('look', () => {
+      this.state.looks = this.state.looks.filter((l) => l.id !== lookId);
+      this.state.lookPhotos = this.state.lookPhotos.filter((lp) => lp.lookId !== lookId);
+      this.state.lookProductItems = this.state.lookProductItems.filter((lpi) => lpi.lookId !== lookId);
+      this.state.wearReviews = this.state.wearReviews.filter((w) => w.lookId !== lookId);
+      return { ok: true, purgedAssetCandidates: candidateAssets };
+    });
+    if (!res.ok) return res;
+    let cleanedAssets = 0;
+    for (const aid of candidateAssets) {
+      if (await this.cleanupOrphanAsset(aid)) cleanedAssets += 1;
+    }
+    return { ok: true, cleanedAssets };
+  }
+
+  /**
+   * 应用启动时检查回收站过期记录（>=7天）并自动永久清理，不依赖后台任务。
+   */
+  async purgeExpiredLooks(now = new Date()) {
+    const nowMs = this._toNowMs(now);
+    const retentionMs = LOOK_TRASH_RETENTION_DAYS * 86400000;
+    const expiredIds = this.state.looks
+      .filter((l) => {
+        if (!l.deletedAt) return false;
+        const purgeMs = Number.isFinite(Date.parse(l.purgeAt || ''))
+          ? Date.parse(l.purgeAt)
+          : Date.parse(l.deletedAt) + retentionMs;
+        return nowMs >= purgeMs;
+      })
+      .map((l) => l.id);
+
+    if (expiredIds.length === 0) return { ok: true, purgedCount: 0, purgedIds: [] };
+
+    const expiredSet = new Set(expiredIds);
+    const candidateAssets = new Set();
+    for (const id of expiredIds) {
+      for (const aid of this._collectLookAssetIds(id)) candidateAssets.add(aid);
+    }
+
+    const res = this.runPersistMutation('look', () => {
+      this.state.looks = this.state.looks.filter((l) => !expiredSet.has(l.id));
+      this.state.lookPhotos = this.state.lookPhotos.filter((lp) => !expiredSet.has(lp.lookId));
+      this.state.lookProductItems = this.state.lookProductItems.filter((lpi) => !expiredSet.has(lpi.lookId));
+      this.state.wearReviews = this.state.wearReviews.filter((w) => !expiredSet.has(w.lookId));
+      return { ok: true, purgedCount: expiredIds.length, purgedIds: expiredIds };
+    });
+    if (!res.ok) return res;
+
+    for (const aid of candidateAssets) {
+      await this.cleanupOrphanAsset(aid);
+    }
+    return res;
   }
 
   addWearReview(lookId, input) {
@@ -895,6 +1124,15 @@ export class PrototypeStore {
       .filter((i) => i.purchasePriceMinor !== null && i.purchasePriceMinor !== undefined && i.purchasePriceMinor !== '')
       .map((i) => ({ minor: i.purchasePriceMinor, currencyCode: i.currencyCode }));
     const currencyTotals = sumByCurrency(purchaseEntries);
+    const selectedCurrency = isSupportedCurrency(this.state.settings?.homeSelectedCurrency)
+      ? this.state.settings.homeSelectedCurrency
+      : 'CNY';
+    const selectedCurrencyTotal =
+      currencyTotals.find((row) => row.currencyCode === selectedCurrency) || {
+        currencyCode: selectedCurrency,
+        minor: '0',
+        count: 0,
+      };
 
     const nearDays = this.state.settings.nearExpiryDays;
     const nearExpiryItems = [];
@@ -921,7 +1159,7 @@ export class PrototypeStore {
       .filter((row) => row.productCount > 0 || row.heldCount > 0);
 
     const recentLooks = [...this.state.looks]
-      .filter((l) => !l.archivedAt)
+      .filter((l) => !l.archivedAt && !l.deletedAt)
       .sort((a, b) => b.lookDate.localeCompare(a.lookDate) || b.createdAt.localeCompare(a.createdAt))
       .slice(0, 6);
 
@@ -962,6 +1200,8 @@ export class PrototypeStore {
       productCount: activeProducts.length,
       heldItemCount: activeHeldItems.length,
       totalItemCount: this.state.productItems.length,
+      selectedCurrency,
+      selectedCurrencyTotal,
       currencyTotals,
       nearExpiryConfigured: Number.isInteger(nearDays) && nearDays > 0,
       nearDays,
@@ -1018,7 +1258,7 @@ export class PrototypeStore {
       'purchase_price_minor',
       'currency_code',
       'purchase_date',
-      'purchase_channel',
+      'acquisition_method',
       'manufacture_date',
       'unopened_shelf_months',
       'opened_date',
@@ -1040,7 +1280,7 @@ export class PrototypeStore {
         i.purchasePriceMinor ?? '',
         i.currencyCode ?? '',
         i.purchaseDate ?? '',
-        i.purchaseChannel ?? '',
+        getItemAcquisitionDisplay(i),
         i.manufactureDate ?? '',
         i.unopenedShelfMonths ?? '',
         i.openedDate ?? '',
@@ -1078,7 +1318,7 @@ export class PrototypeStore {
 
   async resetToSeedData() {
     await this.mediaOps.clearAllBlobs();
-    const seed = createSeedData();
+    const seed = this.normalizeState(createSeedData());
     seed.settings.onboardingDismissed = true;
     this.state = seed;
     this.persist();

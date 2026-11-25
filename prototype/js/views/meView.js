@@ -115,7 +115,7 @@ export function renderMeView({ store, ctx }) {
         </div>
         <div class="stack-sm" style="font-size:13px;color:var(--text-secondary);line-height:1.6;">
           <div>• <strong>无默认上传</strong>：不接入任何服务器、无埋点采集、不连接在线汇率或外部 API。</div>
-          <div>• <strong>白名单分享</strong>：分享卡片预览默认排除价格、购买渠道、私人备注与肌肤日记。</div>
+          <div>• <strong>白名单分享</strong>：分享卡片预览默认排除价格、获得方式、私人备注与肌肤日记。</div>
           <div>• <strong>原生 iOS 能力未在本原型实现（需 Mac/Xcode 与真机实测）</strong>：SQLite + GRDB、<code>isExcludedFromBackup</code> 系统备份排除、PHPicker/相机权限、<code>UIDocumentPicker</code> 与 iCloud Drive、StoreKit 2 沙盒购买与本地通知。</div>
         </div>
       </div>

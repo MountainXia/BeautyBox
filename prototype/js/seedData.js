@@ -550,6 +550,7 @@ export function createSeedData(now = new Date()) {
   const settings = {
     onboardingDismissed: false,
     nearExpiryDays: null, // 临期阈值未在正式文档规定，默认不预设，由用户自行设置
+    homeSelectedCurrency: 'CNY', // 首页累计金额默认展示 CNY，切换后持久化记住最后选择
     simulatedSubscription: 'free', // 'free' | 'pro' | 'expired'（仅前端交互演示）
     icloudEnabledMock: false, // 默认关闭
     lastMockBackupAt: null,

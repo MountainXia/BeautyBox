@@ -20,13 +20,21 @@ import {
 import {
   addMonths,
   deriveComputedExpiry,
+  deriveDualComputedExpiry,
   expiryStatus,
   missingExpiryInputs,
   resolveExpiry,
 } from '../js/expiry.js';
-import { PrototypeStore, STORAGE_KEY } from '../js/store.js';
+import {
+  ACQUISITION_PRESETS,
+  LOOK_TRASH_RETENTION_DAYS,
+  PrototypeStore,
+  STORAGE_KEY,
+  getItemAcquisitionDisplay,
+} from '../js/store.js';
 import { validateImageFile } from '../js/assets.js';
 import { clearDiagnostics, getDiagnostics } from '../js/diagnostics.js';
+import { buildShareCardPayload } from '../js/shareCard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTOTYPE_DIR = path.resolve(__dirname, '..');
@@ -152,7 +160,12 @@ test('有效期规则：不猜测缺项、月末边界正确、不覆盖用户�
   assert.equal(addMonths('2024-01-31', 1), '2024-02-29');
 
   const incomplete = { manufactureDate: '2025-01-01', unopenedShelfMonths: null, openedDate: null, paoMonths: null };
-  assert.deepEqual(deriveComputedExpiry(incomplete), { computedExpiryDate: null, expiryBasis: 'none' });
+  assert.deepEqual(deriveComputedExpiry(incomplete), {
+    computedExpiryDate: null,
+    expiryBasis: 'none',
+    unopenedComputedExpiry: null,
+    openedComputedExpiry: null,
+  });
   assert.equal(missingExpiryInputs(incomplete).length, 1);
 
   const storage = createMemoryStorage();
@@ -284,4 +297,180 @@ test('TASK02.1-A：Safari 空 MIME 图片校验、localStorage 失败回滚与�
   assert.equal(logs[0].errorName, 'QuotaExceededError');
   assert.equal(JSON.stringify(logs[0]).includes('绝对不应该进诊断日志的私人备注'), false);
   clearDiagnostics();
+});
+
+test('TASK02.1-B：未开封与开封后独立推算、获得方式兼容、妆容 7 天回收站、首页单币种汇总', async () => {
+  const storage = createMemoryStorage();
+  const mediaOps = createFakeMediaOps();
+  const store = new PrototypeStore({ storage, mediaOps });
+
+  // 1. 未开封与开封后独立推算：互不覆盖、不自动取较早日期、不覆盖用户确认日期
+  const dual = deriveDualComputedExpiry({
+    manufactureDate: '2025-01-01',
+    unopenedShelfMonths: 36,
+    openedDate: '2026-06-01',
+    paoMonths: 12,
+  });
+  assert.equal(dual.unopened.date, '2028-01-01');
+  assert.equal(dual.opened.date, '2027-06-01');
+
+  const itemDualRes = store.saveProductItem({
+    productId: 'prod-lip-196',
+    status: 'in_use',
+    currencyCode: 'CNY',
+    purchasePriceInput: '100.00',
+    acquisitionPreset: ACQUISITION_PRESETS[0], // 专柜
+    manufactureDate: '2025-01-01',
+    unopenedShelfMonths: '36',
+    openedDate: '2026-06-01',
+    paoMonths: '12',
+    confirmedExpiryDate: '2027-12-31',
+  });
+  assert.equal(itemDualRes.ok, true);
+  assert.equal(itemDualRes.item.unopenedComputedExpiry, '2028-01-01');
+  assert.equal(itemDualRes.item.openedComputedExpiry, '2027-06-01');
+  assert.equal(itemDualRes.item.expiryBasis, 'conflict');
+  assert.equal(itemDualRes.item.computedExpiryDate, null); // 不自动取较早日期
+  assert.equal(itemDualRes.item.confirmedExpiryDate, '2027-12-31'); // 不覆盖确认日期
+  assert.equal(getItemAcquisitionDisplay(itemDualRes.item), '专柜');
+
+  // 2. 获得方式自定义 + 旧版 purchaseChannel 向后兼容
+  const customAcq = store.saveProductItem({
+    productId: 'prod-lip-196',
+    status: 'unopened',
+    acquisitionPreset: '其他',
+    acquisitionCustomText: '日本药妆店带回',
+  });
+  assert.equal(customAcq.ok, true);
+  assert.equal(getItemAcquisitionDisplay(customAcq.item), '日本药妆店带回');
+
+  // 模拟旧版 localStorage（仅 purchaseChannel，无 acquisitionMethod / deletedAt / homeSelectedCurrency）
+  const legacyRaw = JSON.parse(storage.getItem(STORAGE_KEY));
+  delete legacyRaw.settings.homeSelectedCurrency;
+  legacyRaw.productItems[0].purchaseChannel = '机场日上旧格式';
+  delete legacyRaw.productItems[0].acquisitionMethod;
+  delete legacyRaw.looks[0].deletedAt;
+  delete legacyRaw.looks[0].purgeAt;
+  storage.setItem(STORAGE_KEY, JSON.stringify(legacyRaw));
+
+  const migratedStore = new PrototypeStore({ storage, mediaOps });
+  assert.equal(migratedStore.state.settings.homeSelectedCurrency, 'CNY');
+  assert.equal(getItemAcquisitionDisplay(migratedStore.state.productItems[0]), '机场日上旧格式');
+  assert.equal(migratedStore.state.looks[0].deletedAt, null);
+
+  // 3. 首页累计金额单币种切换、记住选择、无记录显零、详情保留多币种
+  const homeDefault = migratedStore.getHomeSummary();
+  assert.equal(homeDefault.selectedCurrency, 'CNY');
+  assert.equal(homeDefault.selectedCurrencyTotal.currencyCode, 'CNY');
+  assert.equal(homeDefault.selectedCurrencyTotal.minor, '169800'); // 原 159800 + 新 10000
+
+  migratedStore.updateSettings({ homeSelectedCurrency: 'KWD' });
+  const reloadedHomeStore = new PrototypeStore({ storage, mediaOps });
+  const homeKwdSeeded = reloadedHomeStore.getHomeSummary();
+  assert.equal(homeKwdSeeded.selectedCurrency, 'KWD');
+  assert.equal(homeKwdSeeded.selectedCurrencyTotal.minor, '28500'); // 仅统计 KWD，不跨币种相加
+  assert.equal(homeKwdSeeded.currencyTotals.length >= 3, true); // 多币种明细仍完整
+
+  // 清空后选定 KWD 无记录应显示零金额，新增后仅累计该币种
+  const emptyCurStorage = createMemoryStorage();
+  const emptyCurStore = new PrototypeStore({ storage: emptyCurStorage, mediaOps: createFakeMediaOps() });
+  await emptyCurStore.clearAllData();
+  emptyCurStore.updateSettings({ homeSelectedCurrency: 'KWD' });
+  const homeKwdEmpty = emptyCurStore.getHomeSummary();
+  assert.equal(homeKwdEmpty.selectedCurrencyTotal.minor, '0');
+  assert.equal(homeKwdEmpty.selectedCurrencyTotal.count, 0);
+  assert.equal(formatMinor(homeKwdEmpty.selectedCurrencyTotal.minor, 'KWD', { showCode: false }), 'KD 0.000');
+
+  const pForKwd = emptyCurStore.saveProduct({ categoryId: 'cat-base', name: '测试粉底' }).product;
+  emptyCurStore.saveProductItem({
+    productId: pForKwd.id,
+    status: 'in_use',
+    currencyCode: 'KWD',
+    purchasePriceInput: '12.345',
+  });
+  const homeKwdFilled = emptyCurStore.getHomeSummary();
+  assert.equal(homeKwdFilled.selectedCurrencyTotal.minor, '12345');
+
+  // 4. 妆容 7 天回收站：软删除、恢复、引用图片保护、到期自动清理、不连带删除产品
+  const sharedAsset = await reloadedHomeStore.addImageFileAsset({ name: 'shared.png', type: 'image/png', size: 1200 });
+  const uniqueAsset = await reloadedHomeStore.addImageFileAsset({ name: 'unique.png', type: 'image/png', size: 900 });
+  reloadedHomeStore.addProductPhoto('prod-lip-196', sharedAsset.id);
+
+  const prodCountBefore = reloadedHomeStore.state.products.length;
+  const itemCountBefore = reloadedHomeStore.state.productItems.length;
+
+  const look1 = reloadedHomeStore.saveLook({
+    name: '测试回收站妆容 A',
+    lookDate: '2026-11-20',
+    assetIds: [sharedAsset.id, uniqueAsset.id],
+    selectedItems: [{ productItemId: itemDualRes.item.id }],
+  }).look;
+
+  const t0 = new Date('2026-11-20T10:00:00Z');
+  const softDel = reloadedHomeStore.softDeleteLook(look1.id, t0);
+  assert.equal(softDel.ok, true);
+  assert.equal(reloadedHomeStore.getActiveLooks().some((l) => l.id === look1.id), false);
+  assert.equal(reloadedHomeStore.getTrashLooks(t0).length, 1);
+  assert.equal(reloadedHomeStore.getTrashLooks(t0)[0].remainingDays, LOOK_TRASH_RETENTION_DAYS);
+  assert.equal(mediaOps.blobs.has(uniqueAsset.id), true); // 回收站期间保留照片以便恢复
+
+  // 3 天后恢复
+  const restoreRes = reloadedHomeStore.restoreLookFromTrash(look1.id);
+  assert.equal(restoreRes.ok, true);
+  assert.equal(reloadedHomeStore.getActiveLooks().some((l) => l.id === look1.id), true);
+  assert.equal(reloadedHomeStore.getTrashLooks(t0).length, 0);
+
+  // 再次软删除：第 6 天启动不清理；第 8 天启动自动永久清理
+  reloadedHomeStore.softDeleteLook(look1.id, t0);
+  const day6 = new Date('2026-11-26T10:00:00Z');
+  const notYet = await reloadedHomeStore.purgeExpiredLooks(day6);
+  assert.equal(notYet.purgedCount, 0);
+
+  const day8 = new Date('2026-11-28T10:00:00Z');
+  const purged = await reloadedHomeStore.purgeExpiredLooks(day8);
+  assert.equal(purged.purgedCount, 1);
+  assert.equal(reloadedHomeStore.state.looks.some((l) => l.id === look1.id), false);
+  assert.equal(reloadedHomeStore.state.products.length, prodCountBefore); // 不连带删除 Product
+  assert.equal(reloadedHomeStore.state.productItems.length, itemCountBefore); // 不连带删除 ProductItem
+  assert.equal(mediaOps.blobs.has(uniqueAsset.id), false); // 无其他引用 -> 清理 Blob
+  assert.equal(mediaOps.blobs.has(sharedAsset.id), true); // 仍被 prod-lip-196 引用 -> 必须保留 Blob
+
+  // 5. 白名单分享卡片字段提取（严禁泄露价格、获得方式、私人备注）
+  const payload = buildShareCardPayload({
+    look: {
+      name: '清透通勤妆',
+      lookDate: '2026-11-25',
+      style: '伪素颜',
+      scene: '日常上班',
+      durationMinutes: 18,
+      selfRating: 5,
+      notesPrivate: '绝不能公开的私人备注_SECRET',
+    },
+    items: [
+      {
+        brandNameSnapshot: 'Lancôme',
+        productNameSnapshot: '菁纯唇膏',
+        shadeSnapshot: '#196',
+        purchasePriceMinor: '32000',
+        acquisitionMethod: { preset: '专柜', customText: '' },
+      },
+    ],
+    wearList: [{ timepointKey: '4小时', overallRating: 4 }],
+    shareOpts: { cardType: 'look', showPhoto: true, showProducts: true, showWear: true },
+  });
+  const payloadJson = JSON.stringify(payload);
+  assert.equal(payload.titlePrefix, '妆容展示卡');
+  assert.equal(payload.showPhoto, true);
+  assert.equal(payloadJson.includes('绝不能公开的私人备注_SECRET'), false);
+  assert.equal(payloadJson.includes('32000'), false);
+  assert.equal(payloadJson.includes('专柜'), false);
+  assert.equal(payloadJson.includes('Lancôme 菁纯唇膏 #196'), true);
+
+  const listPayload = buildShareCardPayload({
+    look: { name: '清单测试', lookDate: '2026-11-25' },
+    items: [],
+    shareOpts: { cardType: 'list', showPhoto: true },
+  });
+  assert.equal(listPayload.showPhoto, false);
+  assert.equal(listPayload.titlePrefix, '产品清单卡');
 });
