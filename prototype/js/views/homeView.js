@@ -3,7 +3,7 @@
  * Tab 1：首页（资产概览、独立计数、分币种历史消费、临期提醒、近期妆容与日常）
  */
 
-import { CURRENCIES, CURRENCY_ORDER, formatMinor } from '../currency.js';
+import { CURRENCIES, formatMinor } from '../currency.js';
 import { todayStr } from '../expiry.js';
 import { buildCategoryPlaceholderUrl } from '../assets.js';
 import { esc, renderEmptyState, renderStars } from '../components/ui.js';
@@ -61,34 +61,24 @@ export function renderHomeView({ store, ctx, actions }) {
   const maxHeldInCat = Math.max(1, ...summary.categoryStats.map((c) => c.heldCount));
 
   return `
-    <div class="stack">
-      <!-- 快捷操作条 -->
-      <div class="card">
-        <div class="section-header" style="margin-bottom:8px;">
-          <h2 class="section-title">快速记录</h2>
-          <span class="section-hint">核心功能离线可用</span>
-        </div>
-        <div class="row-wrap">
-          <button type="button" class="btn btn-primary btn-sm" data-home-add-product="1">+ 添加产品</button>
-          <button type="button" class="btn btn-soft btn-sm" data-home-add-look="1">+ 记妆容</button>
-          <button type="button" class="btn btn-secondary btn-sm" data-home-add-daily="1">+ 记日常</button>
-        </div>
-      </div>
-
-      <!-- 资产概览：Product 与 ProductItem 严格分开统计 -->
+    <div class="stack" style="padding-bottom:68px;">
+      <!-- 资产概览：纯中文简洁计数 + 小问号解释 -->
       <div class="card">
         <div class="section-header">
-          <h2 class="section-title">资产概览</h2>
-          <span class="section-hint">档案与持有件数分别统计</span>
+          <div class="row" style="gap:6px;">
+            <h2 class="section-title">资产概览</h2>
+            <button type="button" class="help-icon-btn" id="home-overview-help" aria-label="查看资产概览说明">?</button>
+          </div>
+          <span class="section-hint">款式与件数分开统计</span>
         </div>
         <div class="kpi-grid">
           <button type="button" class="kpi-box" data-home-go-box="all">
             <div class="kpi-num">${summary.productCount}</div>
-            <div class="kpi-label">产品资料数（Product）</div>
+            <div class="kpi-label">产品款式</div>
           </button>
           <button type="button" class="kpi-box" data-home-go-box="held">
             <div class="kpi-num">${summary.heldItemCount}</div>
-            <div class="kpi-label">当前持有件数（未用完/未归档）</div>
+            <div class="kpi-label">当前持有件数</div>
           </button>
         </div>
 
@@ -119,36 +109,19 @@ export function renderHomeView({ store, ctx, actions }) {
         `}
       </div>
 
-      <!-- 累计购买金额（首页仅展示选定单币种；可切换并记忆；其余币种可在详情查看） -->
+      <!-- 资产总额（极简 1~2 行；币种切换在「我的」设置） -->
       <div class="card">
-        <div class="section-header">
+        <div class="row-between" style="gap:10px;">
           <div>
-            <h2 class="section-title">累计购买金额（单币种）</h2>
-            <span class="section-hint">含已用完与已归档消费 · 不做汇率换算</span>
-          </div>
-          <select class="select" id="home-currency-select" aria-label="切换首页统计币种" style="width:auto;min-width:104px;min-height:36px;padding:6px 28px 6px 10px;">
-            ${CURRENCY_ORDER.map((c) => {
-              const info = CURRENCIES[c];
-              return `<option value="${esc(c)}" ${summary.selectedCurrency === c ? 'selected' : ''}>${esc(c)} · ${esc(info.name)}</option>`;
-            }).join('')}
-          </select>
-        </div>
-
-        <div class="currency-row" style="margin-top:4px;">
-          <div>
-            <div style="font-weight:700;font-size:15px;">${esc(summary.selectedCurrency)} · ${esc(CURRENCIES[summary.selectedCurrency]?.name || '')}</div>
-            <div class="muted-note">
-              ${summary.selectedCurrencyTotal.count > 0
-                ? `${summary.selectedCurrencyTotal.count} 条消费记录`
-                : '当前币种暂无有效金额记录'}
+            <div class="section-title">资产总额</div>
+            <div class="muted-note" style="margin-top:2px;">
+              ${esc(CURRENCIES[summary.selectedCurrency]?.name || summary.selectedCurrency)} · ${summary.selectedCurrencyTotal.count} 条记录
             </div>
           </div>
-          <div class="currency-amount">${esc(formatMinor(summary.selectedCurrencyTotal.minor, summary.selectedCurrencyTotal.currencyCode, { showCode: false }))}</div>
-        </div>
-
-        <div class="row-between" style="margin-top:10px;gap:8px;">
-          <div class="muted-note" style="flex:1;">只统计当前选定币种，不与其他币种相加。</div>
-          <button type="button" class="btn btn-secondary btn-sm" id="home-all-currencies-btn">查看各币种明细</button>
+          <div style="text-align:right;">
+            <div class="currency-amount">${esc(formatMinor(summary.selectedCurrencyTotal.minor, summary.selectedCurrencyTotal.currencyCode, { showCode: false }))}</div>
+            <button type="button" class="ghost-mini-btn" id="home-all-currencies-btn" style="margin-top:4px;">各币种明细 ›</button>
+          </div>
         </div>
       </div>
 
@@ -247,24 +220,66 @@ export function renderHomeView({ store, ctx, actions }) {
           `}
       </div>
     </div>
+
+    <!-- 首页悬浮快速记录按钮（FAB） -->
+    <div id="home-fab-backdrop" class="fab-backdrop" style="display:none;"></div>
+    <div class="fab-wrap">
+      <div id="home-fab-menu" class="fab-menu" style="display:none;">
+        <button type="button" class="fab-menu-item" data-home-add-product="1">＋ 添加产品</button>
+        <button type="button" class="fab-menu-item" data-home-add-look="1">✦ 记妆容</button>
+        <button type="button" class="fab-menu-item" data-home-add-daily="1">◷ 记日常</button>
+      </div>
+      <button type="button" class="fab-btn" id="home-fab-btn" aria-label="快速记录" aria-expanded="false">+</button>
+    </div>
   `;
 }
 
 export function bindHomeEvents(container, { store, actions, sheet }) {
-  container.querySelector('#home-currency-select')?.addEventListener('change', (e) => {
-    store.updateSettings({ homeSelectedCurrency: e.target.value });
-    actions.rerender();
+  const fabBtn = container.querySelector('#home-fab-btn');
+  const fabMenu = container.querySelector('#home-fab-menu');
+  const fabBackdrop = container.querySelector('#home-fab-backdrop');
+
+  const setFabOpen = (open) => {
+    if (!fabBtn || !fabMenu || !fabBackdrop) return;
+    fabMenu.style.display = open ? 'flex' : 'none';
+    fabBackdrop.style.display = open ? 'block' : 'none';
+    fabBtn.classList.toggle('is-open', open);
+    fabBtn.setAttribute('aria-expanded', String(open));
+  };
+
+  fabBtn?.addEventListener('click', () => {
+    const isOpen = fabBtn.classList.contains('is-open');
+    setFabOpen(!isOpen);
+  });
+  fabBackdrop?.addEventListener('click', () => setFabOpen(false));
+
+  container.querySelector('#home-overview-help')?.addEventListener('click', () => {
+    sheet?.open({
+      title: '产品款式与持有件数说明',
+      bodyHtml: `
+        <div class="stack">
+          <div class="card">
+            <div style="font-weight:700;margin-bottom:4px;">产品款式</div>
+            <div class="muted-note" style="line-height:1.6;">统计您收录的美妆产品档案数量（同一款口红只算 1 种款式）。</div>
+          </div>
+          <div class="card">
+            <div style="font-weight:700;margin-bottom:4px;">当前持有件数</div>
+            <div class="muted-note" style="line-height:1.6;">统计您目前实际手头持有的单品总数（例如同款口红买了 2 支则计为 2 件；已用完、已弃用、已停用的不再计入当前持有）。</div>
+          </div>
+        </div>
+      `,
+    });
   });
 
   container.querySelector('#home-all-currencies-btn')?.addEventListener('click', () => {
     const summary = store.getHomeSummary(todayStr());
     if (!sheet) return;
     sheet.open({
-      title: '各币种消费明细（分币种统计）',
+      title: '各币种资产明细',
       bodyHtml: `
         <div class="stack">
           <div class="form-banner-info">
-            严格按 ISO 4217 币种与精度独立累计，不做汇率换算，也不跨币种相加。首页默认仅展示您选定的单币种。
+            不同币种分别独立统计，不做汇率换算，也不跨币种相加。首页默认展示币种可在「我的 → 首页资产币种」中切换。
           </div>
           ${summary.currencyTotals.length === 0
             ? `<div class="muted-note">暂无已记录有效金额的持有实例。</div>`
@@ -275,8 +290,8 @@ export function bindHomeEvents(container, { store, actions, sheet }) {
                     (row) => `
                   <div class="currency-row">
                     <div>
-                      <div style="font-weight:700;font-size:14px;">${esc(row.currencyCode)} · ${esc(CURRENCIES[row.currencyCode]?.name || '')}</div>
-                      <div class="muted-note">${row.count} 条消费记录（含已用完/已归档）</div>
+                      <div style="font-weight:700;font-size:14px;">${esc(row.currencyCode)} · ${esc(CURRENCIES[row.currencyCode]?.name || row.currencyCode)}</div>
+                      <div class="muted-note">${row.count} 条记录</div>
                     </div>
                     <div class="currency-amount">${esc(formatMinor(row.minor, row.currencyCode, { showCode: false }))}</div>
                   </div>
@@ -290,13 +305,22 @@ export function bindHomeEvents(container, { store, actions, sheet }) {
     });
   });
   container.querySelectorAll('[data-home-add-product]').forEach((el) => {
-    el.addEventListener('click', () => actions.openNewProduct());
+    el.addEventListener('click', () => {
+      setFabOpen(false);
+      actions.openNewProduct();
+    });
   });
   container.querySelectorAll('[data-home-add-look]').forEach((el) => {
-    el.addEventListener('click', () => actions.openNewLook());
+    el.addEventListener('click', () => {
+      setFabOpen(false);
+      actions.openNewLook();
+    });
   });
   container.querySelectorAll('[data-home-add-daily]').forEach((el) => {
-    el.addEventListener('click', () => actions.goTab('daily', { openQuickAdd: true }));
+    el.addEventListener('click', () => {
+      setFabOpen(false);
+      actions.goTab('daily', { openQuickAdd: true });
+    });
   });
   container.querySelectorAll('[data-home-go-box]').forEach((el) => {
     el.addEventListener('click', () => {

@@ -59,7 +59,7 @@ export function buildShareCardPayload({ look, items = [], wearList = [], shareOp
     productLines,
     wearSummary,
     footerLeft: '妆匣 BeautyBox · 本地生成',
-    footerRight: '价格/获得方式/私人备注已隐藏',
+    footerRight: '',
   };
 }
 
@@ -370,9 +370,11 @@ export async function renderShareCardToPng({ payload, coverAsset = null, coverUr
     ctx.font = `500 20px ${fontSans}`;
     ctx.textBaseline = 'top';
     ctx.fillText(payload.footerLeft, leftX, y);
-    ctx.textAlign = 'right';
-    ctx.fillText(payload.footerRight, leftX + contentW, y);
-    ctx.textAlign = 'left';
+    if (payload.footerRight) {
+      ctx.textAlign = 'right';
+      ctx.fillText(payload.footerRight, leftX + contentW, y);
+      ctx.textAlign = 'left';
+    }
 
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
     if (!blob) throw new Error('浏览器未能生成 PNG 图片数据');

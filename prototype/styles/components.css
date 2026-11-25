@@ -1012,3 +1012,129 @@ html.has-modal-open .toast-root {
   padding: 8px 12px;
   border-radius: var(--radius-xs);
 }
+
+/* 轻量问号说明按钮 */
+.help-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+/* 首页悬浮快速记录按钮（FAB + 轻量菜单） */
+.fab-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(34, 28, 25, 0.22);
+  z-index: 38;
+}
+
+.fab-wrap {
+  position: fixed;
+  right: max(18px, calc((100vw - 440px) / 2 + 18px));
+  bottom: calc(var(--tabbar-height, 64px) + env(safe-area-inset-bottom, 0px) + 16px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+@media (max-width: 767px) {
+  .fab-wrap {
+    right: 18px;
+  }
+}
+
+.fab-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  padding: 8px;
+  box-shadow: 0 12px 32px rgba(42, 32, 26, 0.16);
+  min-width: 148px;
+}
+
+.fab-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fab-menu-item:active,
+.fab-menu-item:hover {
+  background: var(--bg-subtle);
+}
+
+.fab-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 10px 24px rgba(145, 76, 73, 0.34);
+  cursor: pointer;
+  transition: transform 0.16s ease;
+}
+
+.fab-btn.is-open {
+  transform: rotate(45deg);
+}
+
+/* 「我的」折叠列表行 */
+.me-accordion-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.me-accordion-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  min-height: 54px;
+}
+
+.me-accordion-body {
+  padding: 0 16px 16px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 12px;
+}

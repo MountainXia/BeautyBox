@@ -29,8 +29,11 @@ import {
   ACQUISITION_PRESETS,
   LOOK_TRASH_RETENTION_DAYS,
   PrototypeStore,
+  SPEC_UNITS,
   STORAGE_KEY,
+  formatSpecification,
   getItemAcquisitionDisplay,
+  parseSpecificationParts,
 } from '../js/store.js';
 import { validateImageFile } from '../js/assets.js';
 import { clearDiagnostics, getDiagnostics } from '../js/diagnostics.js';
@@ -100,15 +103,14 @@ test('静态规范检查：currency.js 不包含浮点转换，store 序列化�
   assert.equal(/data:image\/.*;base64/i.test(storage.getItem(STORAGE_KEY)), false);
 });
 
-test('多币种精确转换与往返一致：CNY/USD 2位、JPY 0位、KWD 3位', () => {
+test('多币种精确转换与往返一致：CNY/HKD/USD/GBP（2位小数）', () => {
   const cases = [
     { code: 'CNY', input: '12.34', minor: '1234', dec: '12.34', formatted: '¥ 12.34' },
     { code: 'CNY', input: '0.05', minor: '5', dec: '0.05', formatted: '¥ 0.05' },
     { code: 'CNY', input: '320', minor: '32000', dec: '320.00', formatted: '¥ 320.00' },
+    { code: 'HKD', input: '480', minor: '48000', dec: '480.00', formatted: 'HK$ 480.00' },
     { code: 'USD', input: '12.34', minor: '1234', dec: '12.34', formatted: 'US$ 12.34' },
-    { code: 'JPY', input: '1234', minor: '1234', dec: '1234', formatted: 'JP¥ 1,234' },
-    { code: 'KWD', input: '12.345', minor: '12345', dec: '12.345', formatted: 'KD 12.345' },
-    { code: 'KWD', input: '0.005', minor: '5', dec: '0.005', formatted: 'KD 0.005' },
+    { code: 'GBP', input: '32.50', minor: '3250', dec: '32.50', formatted: '£ 32.50' },
   ];
   for (const c of cases) {
     const parsed = parseAmountToMinor(c.input, c.code);
@@ -128,20 +130,16 @@ test('拦截未配置币种与超出标准精度的输入（禁止默认 2 位�
   assert.equal(cny3.ok, false);
   assert.equal(cny3.code, 'PRECISION');
 
-  const jpyDec = parseAmountToMinor('12.5', 'JPY');
-  assert.equal(jpyDec.ok, false);
-  assert.equal(jpyDec.code, 'PRECISION');
-
-  const kwd4 = parseAmountToMinor('1.2345', 'KWD');
-  assert.equal(kwd4.ok, false);
-  assert.equal(kwd4.code, 'PRECISION');
+  const gbp3 = parseAmountToMinor('12.345', 'GBP');
+  assert.equal(gbp3.ok, false);
+  assert.equal(gbp3.code, 'PRECISION');
 
   assert.throws(() => addMoney({ currencyCode: 'CNY', minor: '100' }, { currencyCode: 'USD', minor: '100' }));
 
   const grouped = sumByCurrency([
     { currencyCode: 'CNY', minor: '1234' },
-    { currencyCode: 'JPY', minor: '1234' },
-    { currencyCode: 'KWD', minor: '12345' },
+    { currencyCode: 'HKD', minor: '48000' },
+    { currencyCode: 'GBP', minor: '3250' },
     { currencyCode: 'CNY', minor: '66' },
   ]);
   assert.equal(grouped.length, 3);
@@ -149,8 +147,8 @@ test('拦截未配置币种与超出标准精度的输入（禁止默认 2 位�
     grouped.map((g) => [g.currencyCode, g.minor]),
     [
       ['CNY', '1300'],
-      ['JPY', '1234'],
-      ['KWD', '12345'],
+      ['HKD', '48000'],
+      ['GBP', '3250'],
     ],
   );
 });
@@ -185,14 +183,14 @@ test('有效期规则：不猜测缺项、月末边界正确、不覆盖用户�
   const created = store.saveProductItem({
     productId: 'prod-lip-196',
     status: 'in_use',
-    currencyCode: 'KWD',
-    purchasePriceInput: '12.345',
+    currencyCode: 'GBP',
+    purchasePriceInput: '12.35',
     openedDate: '2026-01-01',
     paoMonths: '12',
     confirmedExpiryDate: '2027-06-30',
   });
   assert.equal(created.ok, true);
-  assert.equal(created.item.purchasePriceMinor, '12345');
+  assert.equal(created.item.purchasePriceMinor, '1235');
   assert.equal(created.item.confirmedExpiryDate, '2027-06-30');
   assert.equal(created.item.expiryNeedsReconfirm, false);
 
@@ -200,8 +198,8 @@ test('有效期规则：不猜测缺项、月末边界正确、不覆盖用户�
     id: created.item.id,
     productId: 'prod-lip-196',
     status: 'in_use',
-    currencyCode: 'KWD',
-    purchasePriceInput: '12.345',
+    currencyCode: 'GBP',
+    purchasePriceInput: '12.35',
     openedDate: '2026-02-01',
     paoMonths: '12',
     confirmedExpiryDate: '2027-06-30',
@@ -364,32 +362,42 @@ test('TASK02.1-B：未开封与开封后独立推算、获得方式兼容、妆�
   assert.equal(homeDefault.selectedCurrencyTotal.currencyCode, 'CNY');
   assert.equal(homeDefault.selectedCurrencyTotal.minor, '169800'); // 原 159800 + 新 10000
 
-  migratedStore.updateSettings({ homeSelectedCurrency: 'KWD' });
+  migratedStore.updateSettings({ homeSelectedCurrency: 'GBP' });
   const reloadedHomeStore = new PrototypeStore({ storage, mediaOps });
-  const homeKwdSeeded = reloadedHomeStore.getHomeSummary();
-  assert.equal(homeKwdSeeded.selectedCurrency, 'KWD');
-  assert.equal(homeKwdSeeded.selectedCurrencyTotal.minor, '28500'); // 仅统计 KWD，不跨币种相加
-  assert.equal(homeKwdSeeded.currencyTotals.length >= 3, true); // 多币种明细仍完整
+  const homeGbpSeeded = reloadedHomeStore.getHomeSummary();
+  assert.equal(homeGbpSeeded.selectedCurrency, 'GBP');
+  assert.equal(homeGbpSeeded.selectedCurrencyTotal.minor, '3200'); // 仅统计 GBP，不跨币种相加
+  assert.equal(homeGbpSeeded.currencyTotals.length >= 3, true); // 多币种明细仍完整
 
-  // 清空后选定 KWD 无记录应显示零金额，新增后仅累计该币种
+  // 清空后选定 HKD 无记录应显示零金额，新增后仅累计该币种
   const emptyCurStorage = createMemoryStorage();
   const emptyCurStore = new PrototypeStore({ storage: emptyCurStorage, mediaOps: createFakeMediaOps() });
   await emptyCurStore.clearAllData();
-  emptyCurStore.updateSettings({ homeSelectedCurrency: 'KWD' });
-  const homeKwdEmpty = emptyCurStore.getHomeSummary();
-  assert.equal(homeKwdEmpty.selectedCurrencyTotal.minor, '0');
-  assert.equal(homeKwdEmpty.selectedCurrencyTotal.count, 0);
-  assert.equal(formatMinor(homeKwdEmpty.selectedCurrencyTotal.minor, 'KWD', { showCode: false }), 'KD 0.000');
+  emptyCurStore.updateSettings({ homeSelectedCurrency: 'HKD' });
+  const homeHkdEmpty = emptyCurStore.getHomeSummary();
+  assert.equal(homeHkdEmpty.selectedCurrencyTotal.minor, '0');
+  assert.equal(homeHkdEmpty.selectedCurrencyTotal.count, 0);
+  assert.equal(formatMinor(homeHkdEmpty.selectedCurrencyTotal.minor, 'HKD', { showCode: false }), 'HK$ 0.00');
 
-  const pForKwd = emptyCurStore.saveProduct({ categoryId: 'cat-base', name: '测试粉底' }).product;
+  const pForHkd = emptyCurStore.saveProduct({
+    categoryId: 'cat-base',
+    name: '测试粉底',
+    specificationValue: '30',
+    specificationUnit: 'ml',
+  }).product;
+  assert.equal(pForHkd.specification, '30 ml');
+  assert.deepEqual(parseSpecificationParts('30ml'), { value: '30', unit: 'ml', customUnit: '' });
+  assert.equal(formatSpecification({ value: '12', unit: '其他', customUnit: '片' }), '12 片');
+  assert.equal(SPEC_UNITS.includes('盒'), true);
+
   emptyCurStore.saveProductItem({
-    productId: pForKwd.id,
+    productId: pForHkd.id,
     status: 'in_use',
-    currencyCode: 'KWD',
-    purchasePriceInput: '12.345',
+    currencyCode: 'HKD',
+    purchasePriceInput: '480.00',
   });
-  const homeKwdFilled = emptyCurStore.getHomeSummary();
-  assert.equal(homeKwdFilled.selectedCurrencyTotal.minor, '12345');
+  const homeHkdFilled = emptyCurStore.getHomeSummary();
+  assert.equal(homeHkdFilled.selectedCurrencyTotal.minor, '48000');
 
   // 4. 妆容 7 天回收站：软删除、恢复、引用图片保护、到期自动清理、不连带删除产品
   const sharedAsset = await reloadedHomeStore.addImageFileAsset({ name: 'shared.png', type: 'image/png', size: 1200 });
@@ -473,4 +481,19 @@ test('TASK02.1-B：未开封与开封后独立推算、获得方式兼容、妆�
   });
   assert.equal(listPayload.showPhoto, false);
   assert.equal(listPayload.titlePrefix, '产品清单卡');
+  assert.equal(listPayload.footerRight, '');
+
+  // 6. 删除产品主档：清理名下实例与无引用 Blob，但保留历史妆容快照不失真
+  const lookWithProd = reloadedHomeStore.saveLook({
+    name: '删除保护测试妆容',
+    lookDate: '2026-11-25',
+    selectedItems: [{ productItemId: itemDualRes.item.id }],
+  }).look;
+  const delProdRes = await reloadedHomeStore.deleteProductSafe('prod-lip-196');
+  assert.equal(delProdRes.ok, true);
+  assert.equal(reloadedHomeStore.state.products.some((p) => p.id === 'prod-lip-196'), false);
+  const keptSnap = reloadedHomeStore.state.lookProductItems.find((lpi) => lpi.lookId === lookWithProd.id);
+  assert.ok(keptSnap);
+  assert.equal(keptSnap.productItemId, null);
+  assert.equal(keptSnap.productNameSnapshot, '菁纯丝绒雾面唇膏');
 });

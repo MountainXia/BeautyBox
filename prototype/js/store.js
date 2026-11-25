@@ -53,6 +53,34 @@ export const ACQUISITION_PRESETS = Object.freeze([
   '品牌赠品/小样',
 ]);
 
+export const SPEC_UNITS = Object.freeze(['ml', 'g', '瓶', '支', '盒', '把', '套', '块', '个']);
+
+export function parseSpecificationParts(spec = '') {
+  const raw = String(spec || '').trim();
+  if (!raw) return { value: '', unit: '', customUnit: '' };
+  const sortedUnits = [...SPEC_UNITS].sort((a, b) => b.length - a.length);
+  for (const u of sortedUnits) {
+    const re = new RegExp(`^([\\d.]+)\\s*${u}$`, 'i');
+    const m = raw.match(re);
+    if (m) return { value: m[1], unit: u, customUnit: '' };
+  }
+  const generic = raw.match(/^([\d.]+)\s*(.+)$/);
+  if (generic) {
+    return { value: generic[1], unit: '其他', customUnit: generic[2].trim() };
+  }
+  return { value: raw, unit: '', customUnit: '' };
+}
+
+export function formatSpecification({ value = '', unit = '', customUnit = '', fallback = '' } = {}) {
+  const v = String(value || '').trim();
+  const uRaw = String(unit || '').trim();
+  const u = uRaw === '其他' ? String(customUnit || '').trim() : uRaw;
+  if (v && u) return `${v} ${u}`;
+  if (v) return v;
+  if (u) return u;
+  return String(fallback || '').trim();
+}
+
 export function normalizeAcquisitionMethod(input) {
   if (!input) return { acquisitionMethod: null, purchaseChannel: '' };
   if (typeof input === 'object' && !Array.isArray(input)) {
@@ -458,13 +486,23 @@ export class PrototypeStore {
       const now = new Date().toISOString();
       const brandId = this.ensureBrandId(input.brandName || '');
 
+      const specStr = formatSpecification({
+        value: input.specificationValue,
+        unit: input.specificationUnit,
+        customUnit: input.specificationCustomUnit,
+        fallback: input.specification,
+      });
+
       if (input.id) {
         const existing = this.state.products.find((p) => p.id === input.id);
         if (!existing) return { ok: false, error: '未找到要编辑的产品' };
         existing.name = name;
         existing.categoryId = categoryId;
         existing.brandId = brandId;
-        existing.specification = (input.specification || '').trim();
+        existing.specification = specStr;
+        existing.specificationValue = (input.specificationValue || '').trim();
+        existing.specificationUnit = (input.specificationUnit || '').trim();
+        existing.specificationCustomUnit = (input.specificationCustomUnit || '').trim();
         existing.shade = (input.shade || '').trim();
         existing.texture = (input.texture || '').trim();
         existing.finish = (input.finish || '').trim();
@@ -481,7 +519,10 @@ export class PrototypeStore {
         brandId,
         categoryId,
         name,
-        specification: (input.specification || '').trim(),
+        specification: specStr,
+        specificationValue: (input.specificationValue || '').trim(),
+        specificationUnit: (input.specificationUnit || '').trim(),
+        specificationCustomUnit: (input.specificationCustomUnit || '').trim(),
         shade: (input.shade || '').trim(),
         texture: (input.texture || '').trim(),
         finish: (input.finish || '').trim(),
@@ -517,6 +558,50 @@ export class PrototypeStore {
     }
     this.persist();
     return { ok: true, product: prod };
+  }
+
+  /**
+   * 安全删除产品主档：
+   * - 同步清理名下持有实例与产品照片（仅当图片无其他记录引用时才删 Blob）
+   * - 历史妆容、日常流程与使用记录采用 ON DELETE SET NULL 解绑外键，完整保留历史快照，绝不破坏历史记录
+   */
+  async deleteProductSafe(productId) {
+    const prod = this.state.products.find((p) => p.id === productId);
+    if (!prod) return this.failValidation('product', 'id', '产品不存在');
+
+    const itemIds = new Set(this.state.productItems.filter((i) => i.productId === productId).map((i) => i.id));
+    const photoAssets = this.state.productPhotos.filter((p) => p.productId === productId).map((p) => p.assetId);
+    const affectedLookIds = new Set(
+      this.state.lookProductItems.filter((lpi) => itemIds.has(lpi.productItemId)).map((lpi) => lpi.lookId),
+    );
+
+    const res = this.runPersistMutation('product', () => {
+      for (const lpi of this.state.lookProductItems) {
+        if (itemIds.has(lpi.productItemId)) lpi.productItemId = null;
+      }
+      for (const rt of this.state.routines) {
+        for (const st of rt.steps) {
+          for (const sp of st.products) {
+            if (itemIds.has(sp.productItemId)) sp.productItemId = null;
+          }
+        }
+      }
+      for (const rlog of this.state.routineLogs) {
+        for (const rli of rlog.items) {
+          if (itemIds.has(rli.productItemId)) rli.productItemId = null;
+        }
+      }
+      this.state.productItems = this.state.productItems.filter((i) => i.productId !== productId);
+      this.state.productPhotos = this.state.productPhotos.filter((p) => p.productId !== productId);
+      this.state.products = this.state.products.filter((p) => p.id !== productId);
+      return { ok: true, unlinkedLookCount: affectedLookIds.size };
+    });
+
+    if (!res.ok) return res;
+    for (const aid of photoAssets) {
+      await this.cleanupOrphanAsset(aid);
+    }
+    return res;
   }
 
   /**

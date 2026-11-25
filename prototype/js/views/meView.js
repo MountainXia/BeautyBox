@@ -3,6 +3,7 @@
  * Tab 5：我的（本地数据说明、临期阈值设置、导出与模拟备份恢复、iCloud 边界说明、PRO 订阅模拟、隐私说明）
  */
 
+import { CURRENCIES, CURRENCY_ORDER } from '../currency.js';
 import { esc, formatBytes } from '../components/ui.js';
 import {
   clearDiagnostics,
@@ -28,11 +29,30 @@ const SUB_LABELS = {
   expired: { label: 'PRO 已过期（仅交互模拟）', pill: 'pill-amber', desc: '订阅过期后，您仍可永久查看、搜索、导出及恢复全部已有数据，绝不锁死历史记录。' },
 };
 
-export function renderMeView({ store, ctx }) {
+export function renderMeView({ store, viewState = {}, ctx }) {
   const mediaStats = store.getMediaStats();
   const sub = SUB_LABELS[store.state.settings.simulatedSubscription] || SUB_LABELS.free;
   const nearDays = store.state.settings.nearExpiryDays;
+  const selectedCurrency = store.state.settings.homeSelectedCurrency || 'CNY';
+  const currencyInfo = CURRENCIES[selectedCurrency] || CURRENCIES.CNY;
   const diagCount = getDiagnostics().length;
+  const expanded = viewState.expandedSection || null;
+
+  const renderSection = ({ id, title, badge, badgeClass = '', bodyHtml }) => {
+    const isOpen = expanded === id;
+    return `
+      <div class="card me-accordion-card">
+        <button type="button" class="me-accordion-trigger" data-me-toggle="${esc(id)}" aria-expanded="${isOpen}">
+          <span style="font-weight:700;font-size:15px;">${esc(title)}</span>
+          <div class="row" style="gap:8px;">
+            <span class="pill ${esc(badgeClass)}">${esc(badge)}</span>
+            <span class="muted-note" style="font-size:14px;">${isOpen ? '▾' : '›'}</span>
+          </div>
+        </button>
+        ${isOpen ? `<div class="me-accordion-body">${bodyHtml}</div>` : ''}
+      </div>
+    `;
+  };
 
   ctx.setHeader({
     title: '我的',
@@ -42,112 +62,139 @@ export function renderMeView({ store, ctx }) {
 
   return `
     <div class="stack">
-      <!-- 本地模式声明 -->
-      <div class="card">
-        <div class="row-between" style="margin-bottom:6px;">
-          <strong style="font-size:16px;">本地模式，数据保存在本机</strong>
-          <span class="pill pill-sage">100% 离线</span>
-        </div>
-        <div class="muted-note" style="line-height:1.6;">
-          无注册、无登录、无云端用户账号。当前浏览器原型将业务模拟数据保存在 <code>localStorage</code>，将您实际选择的图片以 <code>Blob</code> 保存在浏览器 <code>IndexedDB</code>（不存 Base64）。正式 iOS 版将保存在 iPhone App 私有沙盒（SQLite + GRDB）。
-        </div>
-      </div>
-
-      <!-- 订阅状态模拟（明确标注非 StoreKit 2） -->
-      <div class="card">
-        <div class="row-between" style="margin-bottom:8px;">
-          <h2 class="section-title">会员状态（交互模拟 · 非 StoreKit 2）</h2>
-          <span class="pill ${sub.pill}">${esc(sub.label)}</span>
-        </div>
-        <div class="muted-note" style="margin-bottom:10px;">${esc(sub.desc)}</div>
-        <div class="segmented" style="margin-bottom:10px;">
-          <button type="button" class="seg-btn ${store.state.settings.simulatedSubscription === 'free' ? 'is-active' : ''}" data-me-sub="free">免费版</button>
-          <button type="button" class="seg-btn ${store.state.settings.simulatedSubscription === 'pro' ? 'is-active' : ''}" data-me-sub="pro">PRO 激活</button>
-          <button type="button" class="seg-btn ${store.state.settings.simulatedSubscription === 'expired' ? 'is-active' : ''}" data-me-sub="expired">订阅过期</button>
-        </div>
-        <div class="muted-note">提示：切换到“订阅过期”后，下方所有查看与导出按钮依然保持完全可用。</div>
-      </div>
-
-      <!-- 临期阈值设置 -->
-      <div class="card">
-        <div class="row-between" style="margin-bottom:8px;">
-          <h2 class="section-title">临期提醒阈值</h2>
-          <span class="pill ${nearDays ? 'pill-amber' : ''}">${nearDays ? `${nearDays} 天内临期` : '未设置'}</span>
-        </div>
-        <div class="muted-note" style="margin-bottom:10px;">
-          正式文档未擅自规定默认临期天数，因此原型默认“未设置”。您可以手动选择阈值以在首页和妆匣预览临期筛选效果：
-        </div>
-        <div class="row-wrap">
-          <button type="button" class="chip ${nearDays === 30 ? 'is-active' : ''}" data-me-near="30">30 天内</button>
-          <button type="button" class="chip ${nearDays === 60 ? 'is-active' : ''}" data-me-near="60">60 天内</button>
-          <button type="button" class="chip ${nearDays === 90 ? 'is-active' : ''}" data-me-near="90">90 天内</button>
-          <button type="button" class="chip ${!nearDays ? 'is-active' : ''}" data-me-near="">不设置</button>
-        </div>
-      </div>
-
-      <!-- 数据统计、导出与模拟备份 -->
-      <div class="card">
-        <div class="section-header">
-          <h2 class="section-title">数据管理、导出与备份</h2>
-          <span class="section-hint">免费开放</span>
-        </div>
-        <div class="card-muted" style="font-size:13px;margin-bottom:12px;">
-          <div>产品主档：${store.state.products.length} 款 ｜ 持有实例：${store.state.productItems.length} 件 ｜ 妆容：${store.state.looks.length} 篇</div>
-          <div style="margin-top:4px;">IndexedDB 实选图片：${mediaStats.idbCount} 张（${formatBytes(mediaStats.totalBytes)}）｜ 内置离线示例图：${mediaStats.sampleCount} 张</div>
-          <div style="margin-top:4px;">最近模拟备份：${store.state.settings.lastMockBackupAt ? esc(store.state.settings.lastMockBackupAt.slice(0, 19).replace('T', ' ')) : '尚未生成'}</div>
-        </div>
-
-        <div class="stack-sm">
-          <div class="field-row">
-            <button type="button" class="btn btn-secondary btn-sm" id="me-export-json">导出 JSON</button>
-            <button type="button" class="btn btn-secondary btn-sm" id="me-export-csv">导出实例 CSV</button>
+      ${renderSection({
+        id: 'currency',
+        title: '首页资产币种',
+        badge: `${currencyInfo.name} (${currencyInfo.code})`,
+        badgeClass: 'pill-accent',
+        bodyHtml: `
+          <div class="muted-note" style="margin-bottom:10px;">
+            选择首页「资产总额」默认展示的币种（不做跨币种相加或汇率换算，多币种可在首页“各币种明细”查看）。
           </div>
-          <button type="button" class="btn btn-soft btn-block" id="me-mock-backup">生成模拟 .beautyboxbackup 清单包</button>
-          <button type="button" class="btn btn-secondary btn-block" id="me-mock-restore">从备份文件恢复（交互模拟）</button>
-          <button type="button" class="btn btn-secondary btn-block" id="me-icloud-info">iCloud 与整机备份边界说明（默认关闭）</button>
-        </div>
-      </div>
+          <div class="row-wrap">
+            ${CURRENCY_ORDER.map((c) => {
+              const info = CURRENCIES[c];
+              return `<button type="button" class="chip ${selectedCurrency === c ? 'is-active' : ''}" data-me-currency="${esc(c)}">${esc(info.name)} (${esc(c)})</button>`;
+            }).join('')}
+          </div>
+        `,
+      })}
 
-      <!-- 隐私与原生边界说明 -->
-      <div class="card">
-        <div class="section-header">
-          <h2 class="section-title">隐私说明与原型能力边界</h2>
-        </div>
-        <div class="stack-sm" style="font-size:13px;color:var(--text-secondary);line-height:1.6;">
-          <div>• <strong>无默认上传</strong>：不接入任何服务器、无埋点采集、不连接在线汇率或外部 API。</div>
-          <div>• <strong>白名单分享</strong>：分享卡片预览默认排除价格、获得方式、私人备注与肌肤日记。</div>
-          <div>• <strong>原生 iOS 能力未在本原型实现（需 Mac/Xcode 与真机实测）</strong>：SQLite + GRDB、<code>isExcludedFromBackup</code> 系统备份排除、PHPicker/相机权限、<code>UIDocumentPicker</code> 与 iCloud Drive、StoreKit 2 沙盒购买与本地通知。</div>
-        </div>
-      </div>
+      ${renderSection({
+        id: 'near',
+        title: '临期提醒阈值',
+        badge: nearDays ? `${nearDays} 天内` : '未设置',
+        badgeClass: nearDays ? 'pill-amber' : '',
+        bodyHtml: `
+          <div class="muted-note" style="margin-bottom:10px;">
+            正式文档未擅自规定默认临期天数，因此原型默认“未设置”。您可以手动选择阈值以在首页和妆匣预览临期筛选效果：
+          </div>
+          <div class="row-wrap">
+            <button type="button" class="chip ${nearDays === 30 ? 'is-active' : ''}" data-me-near="30">30 天内</button>
+            <button type="button" class="chip ${nearDays === 60 ? 'is-active' : ''}" data-me-near="60">60 天内</button>
+            <button type="button" class="chip ${nearDays === 90 ? 'is-active' : ''}" data-me-near="90">90 天内</button>
+            <button type="button" class="chip ${!nearDays ? 'is-active' : ''}" data-me-near="">不设置</button>
+          </div>
+        `,
+      })}
 
-      <!-- 保存排查与脱敏诊断日志 -->
-      <div class="card">
-        <div class="section-header">
-          <h2 class="section-title">保存异常诊断日志</h2>
-          <span class="pill ${diagCount > 0 ? 'pill-amber' : 'pill-sage'}">${diagCount} 条记录</span>
-        </div>
-        <div class="muted-note" style="margin-bottom:10px;line-height:1.55;">
-          仅记录保存失败阶段（如 IndexedDB 打开/事务/Blob 写入、localStorage 写入、表单校验）、错误名称与错误消息，绝不记录照片内容、私人备注或日记正文。
-        </div>
-        <button type="button" class="btn btn-secondary btn-block" id="me-view-diag">查看最近保存诊断日志</button>
-      </div>
+      ${renderSection({
+        id: 'backup',
+        title: '数据管理、导出与备份',
+        badge: `${store.state.products.length} 款 · ${store.state.productItems.length} 件`,
+        bodyHtml: `
+          <div class="card-muted" style="font-size:13px;margin-bottom:12px;">
+            <div>产品主档：${store.state.products.length} 款 ｜ 持有实例：${store.state.productItems.length} 件 ｜ 妆容：${store.state.looks.length} 篇</div>
+            <div style="margin-top:4px;">IndexedDB 实选图片：${mediaStats.idbCount} 张（${formatBytes(mediaStats.totalBytes)}）｜ 内置离线示例图：${mediaStats.sampleCount} 张</div>
+            <div style="margin-top:4px;">最近模拟备份：${store.state.settings.lastMockBackupAt ? esc(store.state.settings.lastMockBackupAt.slice(0, 19).replace('T', ' ')) : '尚未生成'}</div>
+          </div>
+          <div class="stack-sm">
+            <div class="field-row">
+              <button type="button" class="btn btn-secondary btn-sm" id="me-export-json">导出 JSON</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="me-export-csv">导出实例 CSV</button>
+            </div>
+            <button type="button" class="btn btn-soft btn-block" id="me-mock-backup">生成模拟 .beautyboxbackup 清单包</button>
+            <button type="button" class="btn btn-secondary btn-block" id="me-mock-restore">从备份文件恢复（交互模拟）</button>
+            <button type="button" class="btn btn-secondary btn-block" id="me-icloud-info">iCloud 与整机备份边界说明（默认关闭）</button>
+          </div>
+        `,
+      })}
 
-      <!-- 重置与清空模拟数据 -->
-      <div class="card">
-        <div class="section-header">
-          <h2 class="section-title">原型数据重置与清空</h2>
-          <span class="section-hint">同步清理 IndexedDB</span>
-        </div>
-        <div class="field-row">
-          <button type="button" class="btn btn-secondary btn-sm" id="me-reset-seed">恢复演示数据</button>
-          <button type="button" class="btn btn-danger btn-sm" id="me-clear-all">清空全部模拟数据</button>
-        </div>
-      </div>
+      ${renderSection({
+        id: 'sub',
+        title: '会员状态（交互模拟）',
+        badge: sub.label,
+        badgeClass: sub.pill,
+        bodyHtml: `
+          <div class="muted-note" style="margin-bottom:10px;">${esc(sub.desc)}</div>
+          <div class="segmented" style="margin-bottom:10px;">
+            <button type="button" class="seg-btn ${store.state.settings.simulatedSubscription === 'free' ? 'is-active' : ''}" data-me-sub="free">免费版</button>
+            <button type="button" class="seg-btn ${store.state.settings.simulatedSubscription === 'pro' ? 'is-active' : ''}" data-me-sub="pro">PRO 激活</button>
+            <button type="button" class="seg-btn ${store.state.settings.simulatedSubscription === 'expired' ? 'is-active' : ''}" data-me-sub="expired">订阅过期</button>
+          </div>
+          <div class="muted-note">提示：切换到“订阅过期”后，所有查看与导出按钮依然保持完全可用。</div>
+        `,
+      })}
+
+      ${renderSection({
+        id: 'privacy',
+        title: '本地存储与隐私边界',
+        badge: '100% 离线',
+        badgeClass: 'pill-sage',
+        bodyHtml: `
+          <div class="stack-sm" style="font-size:13px;color:var(--text-secondary);line-height:1.6;">
+            <div>• <strong>纯本地存储</strong>：无注册、无登录、无云端账号，不接入外部 API。</div>
+            <div>• <strong>图片隔离</strong>：浏览器原型业务数据存 <code>localStorage</code>，照片以 <code>Blob</code> 存 <code>IndexedDB</code>；正式 iOS 版保存在 App 私有沙盒（SQLite + GRDB）。</div>
+            <div>• <strong>白名单分享</strong>：分享卡片仅包含勾选的公开展示字段。</div>
+          </div>
+        `,
+      })}
+
+      ${renderSection({
+        id: 'diag',
+        title: '保存异常诊断日志',
+        badge: `${diagCount} 条`,
+        badgeClass: diagCount > 0 ? 'pill-amber' : 'pill-sage',
+        bodyHtml: `
+          <div class="muted-note" style="margin-bottom:10px;line-height:1.55;">
+            仅记录保存失败阶段（如 IndexedDB 打开/事务/Blob 写入、localStorage 写入、表单校验）、错误名称与错误消息，绝不记录照片内容、私人备注或日记正文。
+          </div>
+          <button type="button" class="btn btn-secondary btn-block" id="me-view-diag">查看最近保存诊断日志</button>
+        `,
+      })}
+
+      ${renderSection({
+        id: 'reset',
+        title: '原型数据重置与清空',
+        badge: '同步清理缓存',
+        bodyHtml: `
+          <div class="field-row">
+            <button type="button" class="btn btn-secondary btn-sm" id="me-reset-seed">恢复演示数据</button>
+            <button type="button" class="btn btn-danger btn-sm" id="me-clear-all">清空全部模拟数据</button>
+          </div>
+        `,
+      })}
     </div>
   `;
 }
 
-export function bindMeEvents(container, { store, actions, sheet, dialog, toast }) {
+export function bindMeEvents(container, { store, viewState = {}, actions, sheet, dialog, toast }) {
+  container.querySelectorAll('[data-me-toggle]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.meToggle;
+      viewState.expandedSection = viewState.expandedSection === id ? null : id;
+      actions.rerender();
+    });
+  });
+
+  container.querySelectorAll('[data-me-currency]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const code = btn.dataset.meCurrency;
+      store.updateSettings({ homeSelectedCurrency: code });
+      toast(`已切换首页资产币种为 ${CURRENCIES[code]?.name || code}`);
+      actions.rerender();
+    });
+  });
   container.querySelectorAll('[data-me-sub]').forEach((btn) => {
     btn.addEventListener('click', () => {
       store.updateSettings({ simulatedSubscription: btn.dataset.meSub });

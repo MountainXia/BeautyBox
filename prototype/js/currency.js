@@ -15,15 +15,15 @@
 /** 集中式离线币种精度配置（minor unit exponent = 标准小数位数） */
 export const CURRENCIES = Object.freeze({
   CNY: Object.freeze({ code: 'CNY', name: '人民币', symbol: '¥', exponent: 2 }),
+  HKD: Object.freeze({ code: 'HKD', name: '港币', symbol: 'HK$', exponent: 2 }),
   USD: Object.freeze({ code: 'USD', name: '美元', symbol: 'US$', exponent: 2 }),
-  JPY: Object.freeze({ code: 'JPY', name: '日元', symbol: 'JP¥', exponent: 0 }),
-  KWD: Object.freeze({ code: 'KWD', name: '科威特第纳尔', symbol: 'KD', exponent: 3 }),
+  GBP: Object.freeze({ code: 'GBP', name: '英镑', symbol: '£', exponent: 2 }),
 });
 
 export const CURRENCY_ORDER = Object.freeze(Object.keys(CURRENCIES));
 
 /** 仅用于在原型中演示「未配置币种拦截」，这些币种不在精度配置中，不可保存金额 */
-export const UNCONFIGURED_DEMO_CODES = Object.freeze(['EUR', 'GBP', 'HKD', 'KRW']);
+export const UNCONFIGURED_DEMO_CODES = Object.freeze(['EUR', 'KRW']);
 
 /** 最小货币单位整数的最大位数（防止异常超长输入） */
 export const MAX_MINOR_DIGITS = 15;

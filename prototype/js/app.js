@@ -73,6 +73,9 @@ const uiState = {
     subTab: 'routine',
     selectedDate: '',
   },
+  me: {
+    expandedSection: null,
+  },
 };
 
 function setHeader({ title, subtitle = '', backBtnAttr = '', actionsHtml = '' }) {
@@ -185,8 +188,8 @@ function render({ preserveFocusId = null } = {}) {
     html = renderDailyView({ store, viewState: uiState.daily, ctx });
     bindFn = (el) => bindDailyEvents(el, { store, viewState: uiState.daily, actions, sheet, toast });
   } else {
-    html = renderMeView({ store, ctx });
-    bindFn = (el) => bindMeEvents(el, { store, actions, sheet, dialog, toast });
+    html = renderMeView({ store, viewState: uiState.me, ctx });
+    bindFn = (el) => bindMeEvents(el, { store, viewState: uiState.me, actions, sheet, dialog, toast });
   }
 
   mainEl.innerHTML = html;

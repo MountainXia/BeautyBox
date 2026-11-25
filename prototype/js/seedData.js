@@ -226,10 +226,10 @@ export function createSeedData(now = new Date()) {
     {
       id: 'item-eye-1',
       productId: 'prod-eye-04',
-      purchasePriceMinor: '7700', // JP¥7,700（0位小数）
-      currencyCode: 'JPY',
+      purchasePriceMinor: '48000', // HK$480.00
+      currencyCode: 'HKD',
       purchaseDate: d(-95),
-      purchaseChannel: '东京伊势丹',
+      purchaseChannel: '香港专柜',
       manufactureDate: null,
       unopenedShelfMonths: null,
       openedDate: d(-90),
@@ -249,8 +249,8 @@ export function createSeedData(now = new Date()) {
     {
       id: 'item-serum-1',
       productId: 'prod-serum-b3',
-      purchasePriceMinor: '28500', // KD 28.500（3位小数）
-      currencyCode: 'KWD',
+      purchasePriceMinor: '3200', // £32.00
+      currencyCode: 'GBP',
       purchaseDate: d(-65),
       purchaseChannel: '海外旅行免税店',
       manufactureDate: null,

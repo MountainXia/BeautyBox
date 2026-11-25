@@ -182,7 +182,10 @@ function renderLookDetail({ store, look, ctx }) {
     title: look.name,
     subtitle: `${look.lookDate}${look.scene ? ` · ${look.scene}` : ''}`,
     backBtnAttr: 'data-looks-back="1"',
-    actionsHtml: `<button type="button" class="btn btn-soft btn-sm" data-looks-share="${esc(look.id)}">生成分享图</button>`,
+    actionsHtml: `
+      <button type="button" class="btn btn-secondary btn-sm" data-looks-edit="${esc(look.id)}">编辑</button>
+      <button type="button" class="btn btn-soft btn-sm" data-looks-share="${esc(look.id)}">生成分享图</button>
+    `,
   });
 
   const mainCover = (look.coverAssetId && store.getAssetUrl(look.coverAssetId)) || buildCategoryPlaceholderUrl('妆容');
@@ -331,11 +334,24 @@ function renderLookDetail({ store, look, ctx }) {
 
 /* ---------------- 弹窗：新增妆容记录 ---------------- */
 
-export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
+export function openLookFormSheet({ store, sheet, dialog, toast, lookId = null, onSaved }) {
+  const existing = lookId ? store.state.looks.find((l) => l.id === lookId) : null;
+  const existingItemIds = new Set(
+    existing
+      ? store.state.lookProductItems.filter((lpi) => lpi.lookId === existing.id).map((lpi) => lpi.productItemId).filter(Boolean)
+      : [],
+  );
+  const existingCoverAsset = existing?.coverAssetId
+    ? store.state.mediaAssets.find((a) => a.id === existing.coverAssetId) || null
+    : null;
+
   const heldItems = store.state.productItems.filter((i) => !i.archivedAt && isHeldStatus(i.status));
   let pendingFile = null;
   let pendingPreviewUrl = '';
-  let selectedSampleKey = 'sample-look-commute';
+  let selectedSampleKey = existingCoverAsset
+    ? (existingCoverAsset.kind === 'sample' ? existingCoverAsset.sampleKey : '')
+    : 'sample-look-commute';
+  let preserveExistingAssetId = existingCoverAsset && existingCoverAsset.kind === 'idb' ? existingCoverAsset.id : null;
   let isDirty = false;
   const sampleOpts = getSampleArtworkOptions();
 
@@ -352,28 +368,28 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
 
       <div class="field">
         <label>妆容名称 <span class="req">*</span></label>
-        <input class="input" name="name" required placeholder="例如：周末低饱和茶棕妆" />
+        <input class="input" name="name" required placeholder="例如：周末低饱和茶棕妆" value="${esc(existing?.name || '')}" />
       </div>
 
       <div class="field-row field-row-mobile-stack">
         <div class="field">
           <label>日期 <span class="req">*</span></label>
-          <input class="input" type="date" name="lookDate" value="${todayStr()}" required />
+          <input class="input" type="date" name="lookDate" value="${esc(existing?.lookDate || todayStr())}" required />
         </div>
         <div class="field">
           <label>耗时（分钟）</label>
-          <input class="input" type="number" min="0" name="durationMinutes" placeholder="例如 20" value="20" />
+          <input class="input" type="number" min="0" name="durationMinutes" placeholder="例如 20" value="${esc(existing?.durationMinutes ?? 20)}" />
         </div>
       </div>
 
       <div class="field-row">
         <div class="field">
           <label>风格</label>
-          <input class="input" name="style" placeholder="例如：清透通勤" />
+          <input class="input" name="style" placeholder="例如：清透通勤" value="${esc(existing?.style || '')}" />
         </div>
         <div class="field">
           <label>场景</label>
-          <input class="input" name="scene" placeholder="例如：上班 / 约会" />
+          <input class="input" name="scene" placeholder="例如：上班 / 约会" value="${esc(existing?.scene || '')}" />
         </div>
       </div>
 
@@ -384,7 +400,7 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
             上传照片（存 IndexedDB）
             <input type="file" accept="image/*" id="look-file-input" style="display:none;" />
           </label>
-          <span id="look-file-name" class="muted-note">已选示例图：早八清透伪素颜</span>
+          <span id="look-file-name" class="muted-note">${preserveExistingAssetId ? '已保留当前妆容照片' : selectedSampleKey ? '已选本地示例图' : '未选择图片'}</span>
         </div>
         <div id="look-upload-preview"></div>
         ${renderSamplePickerGrid(selectedSampleKey)}
@@ -403,7 +419,7 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
                   const brand = store.getBrandName(prod.brandId);
                   return `
                     <label style="display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 0;cursor:pointer;">
-                      <input type="checkbox" name="itemIds" value="${esc(item.id)}" style="width:18px;height:18px;" />
+                      <input type="checkbox" name="itemIds" value="${esc(item.id)}" ${existingItemIds.has(item.id) ? 'checked' : ''} style="width:18px;height:18px;" />
                       <span>
                         <strong>${esc(prod.name)}</strong>
                         <span class="muted-note">${esc([brand, prod.shade].filter(Boolean).join(' · '))}</span>
@@ -420,30 +436,31 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
         <div class="field">
           <label>综合自评（1–5 星）</label>
           <select class="select" name="selfRating">
-            <option value="5" selected>5 星 · 非常满意</option>
-            <option value="4">4 星 · 良好</option>
-            <option value="3">3 星 · 一般</option>
-            <option value="2">2 星 · 需调整</option>
-            <option value="1">1 星 · 不太合适</option>
+            ${[5, 4, 3, 2, 1]
+              .map((r) => {
+                const labels = { 5: '5 星 · 非常满意', 4: '4 星 · 良好', 3: '3 星 · 一般', 2: '2 星 · 需调整', 1: '1 星 · 不太合适' };
+                return `<option value="${r}" ${(existing?.selfRating ?? 5) === r ? 'selected' : ''}>${labels[r]}</option>`;
+              })
+              .join('')}
           </select>
         </div>
         <div class="field">
           <label>标签（逗号分隔）</label>
-          <input class="input" name="tags" placeholder="例如：通勤, 低饱和" />
+          <input class="input" name="tags" placeholder="例如：通勤, 低饱和" value="${esc((existing?.tags || []).join(', '))}" />
         </div>
       </div>
 
       <div class="field">
         <label>私人备注（默认不分享）</label>
-        <textarea class="textarea" name="notesPrivate" placeholder="记录手法、搭配感受..."></textarea>
+        <textarea class="textarea" name="notesPrivate" placeholder="记录手法、搭配感受...">${esc(existing?.notesPrivate || '')}</textarea>
       </div>
 
-      <button type="submit" class="btn btn-primary btn-block">保存妆容记录</button>
+      <button type="submit" class="btn btn-primary btn-block">${existing ? '保存修改' : '保存妆容记录'}</button>
     </form>
   `;
 
   sheet.open({
-    title: '新增妆容记录',
+    title: existing ? '编辑妆容记录' : '新增妆容记录',
     bodyHtml,
     onClose: revokePreview,
     beforeClose: () => {
@@ -489,6 +506,16 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
                 subtitle: '离线示例图',
               })
             : '';
+        } else if (preserveExistingAssetId) {
+          const url = store.getAssetUrl(preserveExistingAssetId);
+          previewWrap.innerHTML = url
+            ? renderUploadPreview({
+                previewUrl: url,
+                title: '当前妆容照片',
+                badgeText: '已保存封面',
+                subtitle: '保留原图（可重新上传或改选示例图）',
+              })
+            : '';
         } else {
           previewWrap.innerHTML = '';
         }
@@ -518,6 +545,7 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
           revokePreview();
           const key = btn.dataset.pickSample;
           selectedSampleKey = selectedSampleKey === key ? '' : key;
+          preserveExistingAssetId = null;
           pendingFile = null;
           if (fileInput) fileInput.value = '';
           fileNameEl.textContent = selectedSampleKey ? `已选示例图：${btn.title}` : '不添加照片';
@@ -554,6 +582,8 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
               });
               assetIds.push(id);
             }
+          } else if (preserveExistingAssetId) {
+            assetIds.push(preserveExistingAssetId);
           }
 
           const checkedItems = [...body.querySelectorAll('input[name="itemIds"]:checked')].map((el) => el.value);
@@ -563,6 +593,7 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
             .filter(Boolean);
 
           const res = store.saveLook({
+            id: existing?.id,
             name: fd.get('name'),
             lookDate: fd.get('lookDate'),
             durationMinutes: fd.get('durationMinutes'),
@@ -585,7 +616,7 @@ export function openLookFormSheet({ store, sheet, dialog, toast, onSaved }) {
 
           isDirty = false;
           close();
-          toast('妆容记录已保存（关联产品已生成快照）');
+          toast(existing ? '妆容修改已保存' : '妆容记录已保存（关联产品已生成快照）');
           onSaved?.(res.look);
         } catch (err) {
           if (!err?.stage) {
@@ -730,6 +761,16 @@ function openWearReviewSheet({ store, sheet, toast, lookId, onSaved }) {
             badgeText: '节点实测图',
             subtitle: `${formatBytes(pendingFile.size)} · 保存后写入 IndexedDB`,
           });
+        } else if (preserveExistingAssetId) {
+          const url = store.getAssetUrl(preserveExistingAssetId);
+          previewWrap.innerHTML = url
+            ? renderUploadPreview({
+                previewUrl: url,
+                title: '当前妆容照片',
+                badgeText: '已保存封面',
+                subtitle: '保留原图（可重新上传或改选示例图）',
+              })
+            : '';
         } else {
           previewWrap.innerHTML = '';
         }
@@ -860,13 +901,9 @@ function openSharePreviewSheet({ store, sheet, toast, lookId }) {
   };
 
   sheet.open({
-    title: '生成分享图片（白名单预览）',
+    title: '生成分享图片',
     bodyHtml: `
       <div class="stack">
-        <div class="form-banner-info">
-          <strong>隐私白名单保护：</strong>仅导出勾选的展示字段。购买价格、获得方式、私人备注与肌肤日记默认排除，绝不随分享泄露。
-        </div>
-
         <div class="segmented">
           <button type="button" class="seg-btn is-active" data-share-type="look">妆容展示卡</button>
           <button type="button" class="seg-btn" data-share-type="wear">持妆实测卡</button>
@@ -874,7 +911,7 @@ function openSharePreviewSheet({ store, sheet, toast, lookId }) {
         </div>
 
         <div class="card">
-          <div style="font-size:13px;font-weight:700;margin-bottom:8px;">公开字段白名单勾选</div>
+          <div style="font-size:13px;font-weight:700;margin-bottom:8px;">公开内容勾选</div>
           <div class="row-wrap" style="font-size:13px;">
             <label><input type="checkbox" data-share-opt="showPhoto" checked /> 妆容照片</label>
             <label><input type="checkbox" data-share-opt="showStyle" checked /> 风格/场景</label>
@@ -883,16 +920,13 @@ function openSharePreviewSheet({ store, sheet, toast, lookId }) {
             <label><input type="checkbox" data-share-opt="showRating" checked /> 星级</label>
             <label><input type="checkbox" data-share-opt="showWear" ${wearList.length > 0 ? 'checked' : ''} /> 持妆简报</label>
           </div>
-          <div class="muted-note" style="margin-top:8px;">默认强制关闭：购买价格、获得方式、私人备注、肌肤日记</div>
         </div>
-
-        <div id="share-preview-box">${renderPreview()}</div>
 
         <div id="share-save-error" class="form-banner-error" style="display:none;"></div>
 
         <div class="card" id="share-png-card">
           <div class="section-header" style="margin-bottom:8px;">
-            <h3 class="section-title" style="font-size:14px;">已生成分享图片（PNG）</h3>
+            <h3 class="section-title" style="font-size:14px;">分享图片（PNG）</h3>
             <span class="pill pill-sage" id="share-png-status">生成中...</span>
           </div>
           <div id="share-png-result" class="muted-note">正在本地渲染高清 PNG 分享卡...</div>
@@ -902,12 +936,11 @@ function openSharePreviewSheet({ store, sheet, toast, lookId }) {
           <button type="button" class="btn btn-primary btn-block" id="btn-save-share-card" disabled>保存 / 分享图片到相册</button>
           <button type="button" class="btn btn-secondary btn-block" id="btn-download-share-png" disabled>下载 PNG 图片</button>
         </div>
-        <div class="muted-note" style="text-align:center;">iPhone Safari 可点击「保存 / 分享图片到相册」呼出系统“存储图像”，或直接长按上方 PNG 图片存储到「照片」。</div>
+        <div class="muted-note" style="text-align:center;">iPhone Safari 可点击「保存 / 分享图片到相册」呼出系统“存储图像”，或直接长按上方图片存储到「照片」。</div>
       </div>
     `,
     onClose: revokeGeneratedUrl,
     onMount: (body) => {
-      const box = body.querySelector('#share-preview-box');
       const errBox = body.querySelector('#share-save-error');
       const pngStatus = body.querySelector('#share-png-status');
       const pngResult = body.querySelector('#share-png-result');
@@ -954,7 +987,7 @@ function openSharePreviewSheet({ store, sheet, toast, lookId }) {
         pngStatus.textContent = `已就绪 · ${formatBytes(res.blob.size)}`;
         pngStatus.className = 'pill pill-sage';
         pngResult.innerHTML = `
-          <img id="share-generated-png" src="${generatedBlobUrl}" alt="生成的白名单分享图" style="width:100%;height:auto;border-radius:14px;display:block;border:1px solid var(--border-subtle);" />
+          <img id="share-generated-png" src="${generatedBlobUrl}" alt="生成的分享图" style="width:100%;height:auto;border-radius:14px;display:block;border:1px solid var(--border-subtle);" />
           <div class="muted-note" style="margin-top:6px;text-align:center;">长按上方图片可直接在 iPhone Safari 选择“存储到照片”</div>
         `;
         shareBtn.disabled = false;
@@ -965,14 +998,12 @@ function openSharePreviewSheet({ store, sheet, toast, lookId }) {
         btn.addEventListener('click', () => {
           shareOpts.cardType = btn.dataset.shareType;
           body.querySelectorAll('[data-share-type]').forEach((b) => b.classList.toggle('is-active', b === btn));
-          box.innerHTML = renderPreview();
           rebuildPng();
         });
       });
       body.querySelectorAll('[data-share-opt]').forEach((cb) => {
         cb.addEventListener('change', () => {
           shareOpts[cb.dataset.shareOpt] = cb.checked;
-          box.innerHTML = renderPreview();
           rebuildPng();
         });
       });
@@ -1073,6 +1104,17 @@ export function bindLooksEvents(container, { store, viewState, actions, sheet, d
           actions.rerender();
         },
       });
+    });
+  });
+
+  container.querySelector('[data-looks-edit]')?.addEventListener('click', (e) => {
+    openLookFormSheet({
+      store,
+      sheet,
+      dialog,
+      toast,
+      lookId: e.currentTarget.dataset.looksEdit,
+      onSaved: () => actions.rerender(),
     });
   });
 

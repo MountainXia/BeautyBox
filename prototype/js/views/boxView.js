@@ -24,9 +24,11 @@ import { getSampleArtworkOptions } from '../assets.js';
 import {
   ACQUISITION_PRESETS,
   ITEM_STATUSES,
+  SPEC_UNITS,
   getItemAcquisitionDisplay,
   isHeldStatus,
   normalizeAcquisitionMethod,
+  parseSpecificationParts,
 } from '../store.js';
 import { recordDiagnostic } from '../diagnostics.js';
 import {
@@ -293,17 +295,17 @@ function renderProductDetail({ store, prod, today, ctx }) {
 
   return `
     <div class="stack">
-      <!-- 封面与多图管理（productPhotos.isCover 为唯一真相源） -->
+      <!-- 封面与多图管理 -->
       <div class="card">
         <div class="row-between" style="margin-bottom:10px;">
           <div>
-            <h2 class="section-title">产品照片（多图与封面唯一真相源）</h2>
+            <h2 class="section-title">产品照片</h2>
             <div class="muted-note">
               ${photos.length === 0
-                ? '当前无照片，列表展示品类默认占位图。'
+                ? '暂无照片，当前显示默认占位图。'
                 : coverPreview.isFallback
-                  ? '当前未指定封面（isCover），已按顺序兜底显示第一张照片。'
-                  : '同一产品最多 1 张封面图（productPhotos.isCover）。'}
+                  ? '未指定封面时默认显示首张照片。'
+                  : '可点击下方按钮切换主封面。'}
             </div>
           </div>
           <label class="btn btn-soft btn-sm" style="cursor:pointer;">
@@ -347,23 +349,27 @@ function renderProductDetail({ store, prod, today, ctx }) {
           `}
       </div>
 
-      <!-- 主档属性 -->
+      <!-- 产品档案（仅展示已填属性，不显示“未填”避免歧义） -->
       <div class="card">
         <div class="row-between" style="margin-bottom:8px;">
-          <h2 class="section-title">产品主档案（Product）</h2>
-          ${prod.archivedAt ? `<span class="pill pill-amber">已归档</span>` : `<span class="pill pill-sage">正常</span>`}
+          <h2 class="section-title">产品档案</h2>
+          ${prod.archivedAt ? `<span class="pill pill-amber">已停用</span>` : `<span class="pill pill-sage">在用中</span>`}
         </div>
         <div class="stack-sm" style="font-size:13px;">
-          <div><span class="muted-note">品牌 / 分类：</span>${esc(brand || '未填品牌')} · ${esc(cat)}</div>
-          <div><span class="muted-note">色号 / 规格：</span>${esc(prod.shade || '无')} · ${esc(prod.specification || '未填')}</div>
-          <div><span class="muted-note">质地 / 妆效：</span>${esc(prod.texture || '未填')} · ${esc(prod.finish || '未填')}</div>
-          ${prod.notesPrivate ? `<div class="card-muted" style="margin-top:4px;"><span class="muted-note">私人备注（默认不分享）：</span>${esc(prod.notesPrivate)}</div>` : ''}
+          <div><span class="muted-note">分类：</span>${esc(cat)}${brand ? ` · <span class="muted-note">品牌：</span>${esc(brand)}` : ''}</div>
+          ${prod.shade ? `<div><span class="muted-note">色号 / 款式：</span>${esc(prod.shade)}</div>` : ''}
+          ${prod.specification ? `<div><span class="muted-note">规格：</span>${esc(prod.specification)}</div>` : ''}
+          ${prod.texture || prod.finish
+            ? `<div>${[prod.texture ? `<span class="muted-note">质地：</span>${esc(prod.texture)}` : '', prod.finish ? `<span class="muted-note">妆效：</span>${esc(prod.finish)}` : ''].filter(Boolean).join(' · ')}</div>`
+            : ''}
+          ${prod.notesPrivate ? `<div class="card-muted" style="margin-top:4px;"><span class="muted-note">私人备注：</span>${esc(prod.notesPrivate)}</div>` : ''}
         </div>
         <div class="row-wrap" style="margin-top:12px;">
           <button type="button" class="btn btn-primary btn-sm" data-box-add-item="${esc(prod.id)}">+ 添加持有实例</button>
           <button type="button" class="btn btn-secondary btn-sm" data-box-toggle-archive="${esc(prod.id)}">
-            ${prod.archivedAt ? '取消归档' : '归档产品'}
+            ${prod.archivedAt ? '恢复在用' : '移入已停用'}
           </button>
+          <button type="button" class="btn btn-danger btn-sm" data-box-delete-product="${esc(prod.id)}">删除产品</button>
         </div>
       </div>
 
@@ -441,14 +447,11 @@ function renderItemCard(item, today, nearDays) {
         <span class="muted-note">购买价格 / 获得方式</span>
         <span style="font-weight:700;">
           ${item.purchasePriceMinor !== null && item.purchasePriceMinor !== undefined
-            ? `${esc(formatMinor(item.purchasePriceMinor, item.currencyCode, { showCode: true }))}`
+            ? `${esc(formatMinor(item.purchasePriceMinor, item.currencyCode, { showCode: false }))}`
             : '未填写金额'}
           ${acqLabel ? ` · ${esc(acqLabel)}` : ''}
         </span>
       </div>
-      ${item.purchasePriceMinor !== null && item.purchasePriceMinor !== undefined
-        ? `<div class="muted-note" style="text-align:right;font-family:var(--font-mono);font-size:11px;">存储整数: ${esc(item.purchasePriceMinor)} (${esc(item.currencyCode)})</div>`
-        : ''}
 
       <!-- 剩余比例 -->
       <div style="margin-top:10px;">
@@ -461,30 +464,27 @@ function renderItemCard(item, today, nearDays) {
         </div>
       </div>
 
-      <!-- 完整区分有效期字段（未开封与开封后分别独立推算、分别展示） -->
+      <!-- 精简有效期摘要（点击 ? 查看详细推算与规则） -->
       <div class="card-muted" style="margin-top:10px;font-size:12px;">
-        <div style="font-weight:700;margin-bottom:4px;">有效期明细（未开封 / 开封后独立推算，不按品类猜测）</div>
-        <div>购买日期：${esc(item.purchaseDate || '未填')}</div>
-        <div>生产日期：${esc(item.manufactureDate || '未填')} ｜ 未开封保质期：${item.unopenedShelfMonths ? `${item.unopenedShelfMonths} 个月` : '未填'}</div>
-        <div>开封日期：${esc(item.openedDate || '未填')} ｜ 开封后使用期限（PAO）：${item.paoMonths ? `${item.paoMonths} 个月` : '未填'}</div>
-        <div style="margin-top:5px;color:var(--text-secondary);">
-          • 未开封有效期推算：${dual.unopened.date
-            ? `<strong>${esc(dual.unopened.date)}</strong>（${esc(dual.unopened.formula)}）`
-            : `<span style="color:${dual.unopened.missingHint ? 'var(--amber)' : 'var(--text-tertiary)'};">${esc(dual.unopened.missingHint || EXPIRY_BASIS_LABELS.none)}</span>`}
-        </div>
-        <div style="margin-top:3px;color:var(--text-secondary);">
-          • 开封后有效期推算：${dual.opened.date
-            ? `<strong>${esc(dual.opened.date)}</strong>（${esc(dual.opened.formula)}）`
-            : `<span style="color:${dual.opened.missingHint ? 'var(--amber)' : 'var(--text-tertiary)'};">${esc(dual.opened.missingHint || EXPIRY_BASIS_LABELS.none)}</span>`}
-        </div>
-        ${hasBothDiff
-          ? `<div style="margin-top:4px;color:var(--amber);">两项推算结果不同，系统分别展示且不自动取较早日期，请以您确认的到期日为准。</div>`
-          : ''}
-        <div style="margin-top:5px;font-weight:600;">
-          用户确认到期日：${item.confirmedExpiryDate ? `${esc(item.confirmedExpiryDate)}（确认于 ${esc(item.expiryConfirmedAt?.slice(0, 10) || '')}）` : '尚未人工确认'}
+        <div class="row-between" style="gap:8px;">
+          <div style="min-width:0;flex:1;">
+            <span class="muted-note">有效期：</span>
+            <strong>
+              ${item.confirmedExpiryDate
+                ? `${esc(item.confirmedExpiryDate)}（已确认）`
+                : dual.unopened.date && dual.opened.date
+                  ? `未开封 ${esc(dual.unopened.date)} · 开封后 ${esc(dual.opened.date)}`
+                  : dual.unopened.date
+                    ? `未开封 ${esc(dual.unopened.date)}`
+                    : dual.opened.date
+                      ? `开封后 ${esc(dual.opened.date)}`
+                      : '未设置'}
+            </strong>
+          </div>
+          <button type="button" class="help-icon-btn" data-item-expiry-help="${esc(item.id)}" aria-label="查看有效期计算详情">?</button>
         </div>
         ${resolved.needsReconfirm
-          ? `<div style="margin-top:4px;color:var(--danger);font-weight:600;">⚠ 相关日期/保质期输入已变化，系统保留您的原确认值未覆盖，请核对后重新确认。</div>`
+          ? `<div style="margin-top:4px;color:var(--danger);font-weight:600;">⚠ 日期或保质期已修改，请核对后重新确认到期日。</div>`
           : ''}
       </div>
 
@@ -494,7 +494,7 @@ function renderItemCard(item, today, nearDays) {
         ${item.status !== 'used_up'
           ? `<button type="button" class="btn btn-secondary btn-sm" data-item-empty="${esc(item.id)}">标记已用完</button>`
           : ''}
-        <button type="button" class="btn btn-secondary btn-sm" data-item-archive="${esc(item.id)}">${item.archivedAt ? '恢复实例' : '归档实例'}</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-item-archive="${esc(item.id)}">${item.archivedAt ? '恢复在用' : '移入已停用'}</button>
         <button type="button" class="btn btn-danger btn-sm" data-item-delete="${esc(item.id)}">删除</button>
       </div>
     </div>
@@ -516,6 +516,14 @@ export function openProductFormSheet({ store, sheet, toast, productId = null, on
       pendingPreviewUrl = '';
     }
   };
+
+  const specParts = existing
+    ? {
+        value: existing.specificationValue ?? parseSpecificationParts(existing.specification).value,
+        unit: existing.specificationUnit ?? parseSpecificationParts(existing.specification).unit,
+        customUnit: existing.specificationCustomUnit ?? parseSpecificationParts(existing.specification).customUnit,
+      }
+    : { value: '', unit: 'ml', customUnit: '' };
 
   const bodyHtml = `
     <form id="product-form" class="form-stack" novalidate>
@@ -541,15 +549,27 @@ export function openProductFormSheet({ store, sheet, toast, productId = null, on
           <input class="input" name="brandName" placeholder="例如：Lancôme" value="${esc(existing ? store.getBrandName(existing.brandId) : '')}" />
         </div>
       </div>
+      <div class="field">
+        <label>色号 / 款式</label>
+        <input class="input" name="shade" placeholder="例如：#196 朱砂橘" value="${esc(existing?.shade || '')}" />
+      </div>
       <div class="field-row">
         <div class="field">
-          <label>色号 / 款式</label>
-          <input class="input" name="shade" placeholder="例如：#196 朱砂橘" value="${esc(existing?.shade || '')}" />
+          <label>规格数值</label>
+          <input class="input" name="specificationValue" placeholder="例如：30 / 3.4" value="${esc(specParts.value)}" />
         </div>
         <div class="field">
-          <label>规格</label>
-          <input class="input" name="specification" placeholder="例如：30ml / 3.4g" value="${esc(existing?.specification || '')}" />
+          <label>规格单位</label>
+          <select class="select" name="specificationUnit" id="f-spec-unit">
+            <option value="" ${specParts.unit === '' ? 'selected' : ''}>不选择</option>
+            ${SPEC_UNITS.map((u) => `<option value="${esc(u)}" ${specParts.unit === u ? 'selected' : ''}>${esc(u)}</option>`).join('')}
+            <option value="其他" ${specParts.unit === '其他' ? 'selected' : ''}>其他</option>
+          </select>
         </div>
+      </div>
+      <div class="field" id="f-spec-custom-wrap" style="${specParts.unit === '其他' ? '' : 'display:none;'}">
+        <label>自定义规格单位</label>
+        <input class="input" name="specificationCustomUnit" placeholder="例如：片 / 颗 / 对" value="${esc(specParts.customUnit)}" />
       </div>
       <div class="field-row">
         <div class="field">
@@ -602,7 +622,15 @@ export function openProductFormSheet({ store, sheet, toast, productId = null, on
       const fileInput = body.querySelector('#prod-file-input');
       const fileNameEl = body.querySelector('#prod-file-name');
       const previewWrap = body.querySelector('#prod-upload-preview');
+      const specUnitEl = body.querySelector('#f-spec-unit');
+      const specCustomWrap = body.querySelector('#f-spec-custom-wrap');
       const sampleOpts = getSampleArtworkOptions();
+
+      specUnitEl?.addEventListener('change', () => {
+        if (specCustomWrap) {
+          specCustomWrap.style.display = specUnitEl.value === '其他' ? '' : 'none';
+        }
+      });
 
       const updateUploadPreview = () => {
         const badgeText = !existing || !hasExistingPhotos ? '将设为产品封面' : '将追加产品附图';
@@ -690,7 +718,9 @@ export function openProductFormSheet({ store, sheet, toast, productId = null, on
             categoryId: fd.get('categoryId'),
             brandName: fd.get('brandName'),
             shade: fd.get('shade'),
-            specification: fd.get('specification'),
+            specificationValue: fd.get('specificationValue'),
+            specificationUnit: fd.get('specificationUnit'),
+            specificationCustomUnit: fd.get('specificationCustomUnit'),
             texture: fd.get('texture'),
             finish: fd.get('finish'),
             notesPrivate: fd.get('notesPrivate'),
@@ -744,6 +774,14 @@ export function openItemFormSheet({ store, sheet, toast, productId, itemId = nul
   const acqInit = normalizeAcquisitionMethod(existing?.acquisitionMethod || existing?.purchaseChannel);
   const initialAcqPreset = acqInit.acquisitionMethod?.preset || '';
   const initialAcqCustom = acqInit.acquisitionMethod?.customText || '';
+
+  const specParts = existing
+    ? {
+        value: existing.specificationValue ?? parseSpecificationParts(existing.specification).value,
+        unit: existing.specificationUnit ?? parseSpecificationParts(existing.specification).unit,
+        customUnit: existing.specificationCustomUnit ?? parseSpecificationParts(existing.specification).customUnit,
+      }
+    : { value: '', unit: 'ml', customUnit: '' };
 
   const bodyHtml = `
     <form id="item-form" class="form-stack" novalidate>
@@ -1124,6 +1162,63 @@ export function bindBoxEvents(container, { store, viewState, actions, sheet, dia
         toast,
         productId: el.dataset.boxAddItem,
         onSaved: () => actions.rerender(),
+      });
+    });
+  });
+
+  container.querySelectorAll('[data-box-delete-product]').forEach((el) => {
+    el.addEventListener('click', async () => {
+      const prodId = el.dataset.boxDeleteProduct;
+      const prod = store.state.products.find((p) => p.id === prodId);
+      if (!prod) return;
+      const itemCount = store.state.productItems.filter((i) => i.productId === prodId).length;
+      const ok = await dialog.confirm({
+        title: '删除产品',
+        message: `确定要删除「${prod.name}」吗？名下 ${itemCount} 件持有实例与无其他引用的照片将一并移除；若该产品曾被历史妆容引用，历史妆容仍会完整保留当时的产品名称与色号快照。`,
+        confirmLabel: '确认删除',
+        danger: true,
+      });
+      if (!ok) return;
+      const res = await store.deleteProductSafe(prodId);
+      if (!res.ok) {
+        toast(res.error || '删除失败');
+        return;
+      }
+      viewState.selectedProductId = null;
+      toast('产品已删除（历史妆容快照已保留）');
+      actions.rerender();
+    });
+  });
+
+  container.querySelectorAll('[data-item-expiry-help]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const item = store.state.productItems.find((i) => i.id === el.dataset.itemExpiryHelp);
+      if (!item) return;
+      const dual = deriveDualComputedExpiry(item);
+      sheet.open({
+        title: '有效期推算与规则说明',
+        bodyHtml: `
+          <div class="stack">
+            <div class="card">
+              <div class="stack-sm" style="font-size:13px;">
+                <div><span class="muted-note">购买日期：</span>${esc(item.purchaseDate || '未填')}</div>
+                <div><span class="muted-note">生产日期：</span>${esc(item.manufactureDate || '未填')} ｜ <span class="muted-note">未开封保质期：</span>${item.unopenedShelfMonths ? `${item.unopenedShelfMonths} 个月` : '未填'}</div>
+                <div><span class="muted-note">开封日期：</span>${esc(item.openedDate || '未填')} ｜ <span class="muted-note">开封后期限（PAO）：</span>${item.paoMonths ? `${item.paoMonths} 个月` : '未填'}</div>
+              </div>
+            </div>
+            <div class="card">
+              <div style="font-weight:700;font-size:14px;margin-bottom:6px;">独立推算结果</div>
+              <div class="stack-sm" style="font-size:13px;">
+                <div>• 未开封推算：${dual.unopened.date ? `<strong>${esc(dual.unopened.date)}</strong>（${esc(dual.unopened.formula)}）` : esc(dual.unopened.missingHint || '未填写生产日期或未开封保质期')}</div>
+                <div>• 开封后推算：${dual.opened.date ? `<strong>${esc(dual.opened.date)}</strong>（${esc(dual.opened.formula)}）` : esc(dual.opened.missingHint || '未填写开封日期或 PAO')}</div>
+                <div>• 用户确认到期日：<strong>${item.confirmedExpiryDate ? esc(item.confirmedExpiryDate) : '尚未人工确认'}</strong></div>
+              </div>
+            </div>
+            <div class="form-banner-info">
+              为避免误差，系统绝不按产品分类猜测保质期；当未开封推算与开封后推算不同时，分别独立展示，不自动取较早日期，也不覆盖您手动确认的日期。
+            </div>
+          </div>
+        `,
       });
     });
   });
