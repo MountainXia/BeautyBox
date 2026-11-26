@@ -43,10 +43,38 @@ const store = new PrototypeStore();
 const headerEl = document.getElementById('app-header');
 const mainEl = document.getElementById('app-main');
 const tabBarEl = document.getElementById('tab-bar');
-const sheet = createSheetManager(document.getElementById('sheet-root'));
-const dialog = createDialogManager(document.getElementById('dialog-root'));
+const sheetRootEl = document.getElementById('sheet-root');
+const dialogRootEl = document.getElementById('dialog-root');
+const sheet = createSheetManager(sheetRootEl);
+const dialog = createDialogManager(dialogRootEl);
 const toast = createToastManager(document.getElementById('toast-root'));
 const shellEl = document.getElementById('app-shell');
+
+/** iOS Safari 防卡死兜底：确保弹窗关闭后绝不残留 has-modal-open 锁死页面触控 */
+function syncModalLockSafety() {
+  const anyOpen =
+    sheetRootEl?.classList.contains('is-open') || dialogRootEl?.classList.contains('is-open');
+  if (!anyOpen) {
+    document.documentElement.classList.remove('has-modal-open');
+  }
+}
+
+if (typeof MutationObserver !== 'undefined' && sheetRootEl && dialogRootEl) {
+  const obs = new MutationObserver(syncModalLockSafety);
+  obs.observe(sheetRootEl, { attributes: true, attributeFilter: ['class'] });
+  obs.observe(dialogRootEl, { attributes: true, attributeFilter: ['class'] });
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('error', (e) => {
+    syncModalLockSafety();
+    toast(`页面异常：${e?.message || '未知错误'}`);
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    syncModalLockSafety();
+    toast(`操作异常：${e?.reason?.message || '未知错误'}`);
+  });
+}
 
 document.getElementById('toggle-wide-btn')?.addEventListener('click', (e) => {
   const isWide = shellEl.classList.toggle('is-wide');
@@ -59,9 +87,15 @@ const uiState = {
     search: '',
     categoryId: 'all',
     statusFilter: 'all',
+    pendingSubFilter: 'all',
+    detailFilter: 'all',
     sortBy: 'updated',
-    viewMode: 'grid',
+    viewMode: 'list',
     selectedProductId: null,
+    catScrollLeft: 0,
+    statusScrollLeft: 0,
+    expandedItemIds: new Set(),
+    showUsedUpHistory: false,
   },
   looks: {
     search: '',
@@ -139,19 +173,11 @@ const actions = {
       store,
       sheet,
       toast,
-      onSaved: (product, { andAddItem }) => {
+      onSaved: (product) => {
         uiState.activeTab = 'box';
         uiState.box.selectedProductId = product.id;
+        uiState.box.detailFilter = 'all';
         render();
-        if (andAddItem) {
-          openItemFormSheet({
-            store,
-            sheet,
-            toast,
-            productId: product.id,
-            onSaved: () => render(),
-          });
-        }
       },
     });
   },
@@ -224,7 +250,7 @@ function showOnboardingIfNeeded() {
         <div class="card">
           <div style="font-weight:700;font-size:15px;margin-bottom:6px;">本地优先 · 无需登录 · 隐私自主</div>
           <div class="muted-note" style="line-height:1.65;">
-            • 所有产品档案、购买批次、开封日期、妆容与日常记录默认保存在本地，无登录墙。<br/>
+            • 所有美妆产品、购买批次、开封日期、妆容与日常记录默认保存在本地，无登录墙。<br/>
             • 本网页为 <strong>TASK 02 浏览器交互原型</strong>：模拟数据保存在 <code>localStorage</code>，您选中的照片保存在 <code>IndexedDB</code>，与正式 iOS 原生工程隔离。
           </div>
         </div>
@@ -245,14 +271,15 @@ function showOnboardingIfNeeded() {
   });
 }
 
-// 启动时检查回收站过期妆容（>= 7 天自动永久删除），再渲染并异步恢复 IndexedDB 图片 Blob
-const startupPurgePromise = store.purgeExpiredLooks();
+// 启动时检查回收站过期记录（>= 7 天产品与妆容自动永久删除），再渲染并异步恢复 IndexedDB 图片 Blob
+const startupPurgePromise = store.purgeExpiredTrash();
 render();
 showOnboardingIfNeeded();
-startupPurgePromise.then(({ purgedCount }) => {
-  if (purgedCount > 0) {
+startupPurgePromise.then(({ purgedLooks = 0, purgedProducts = 0 }) => {
+  const totalPurged = purgedLooks + purgedProducts;
+  if (totalPurged > 0) {
     render();
-    toast(`启动检查：已自动永久清理 ${purgedCount} 条到期回收站妆容`);
+    toast(`启动检查：已自动永久清理 ${totalPurged} 条到期回收站记录`);
   }
 });
 store.hydrateMedia().then(({ restored, missingIds }) => {

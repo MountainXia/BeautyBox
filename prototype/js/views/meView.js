@@ -37,6 +37,10 @@ export function renderMeView({ store, viewState = {}, ctx }) {
   const currencyInfo = CURRENCIES[selectedCurrency] || CURRENCIES.CNY;
   const diagCount = getDiagnostics().length;
   const expanded = viewState.expandedSection || null;
+  const trashProds = store.getTrashProducts();
+  const trashLooks = store.getTrashLooks();
+  const trashTotalCount = trashProds.length + trashLooks.length;
+  const fxEnabled = Boolean(store.state.settings.enableForeignCurrency);
 
   const renderSection = ({ id, title, badge, badgeClass = '', bodyHtml }) => {
     const isOpen = expanded === id;
@@ -63,20 +67,37 @@ export function renderMeView({ store, viewState = {}, ctx }) {
   return `
     <div class="stack">
       ${renderSection({
+        id: 'trash',
+        title: '最近删除（7 天回收站）',
+        badge: trashTotalCount > 0 ? `${trashTotalCount} 项` : '空',
+        badgeClass: trashTotalCount > 0 ? 'pill-amber' : '',
+        bodyHtml: `
+          <div class="muted-note" style="margin-bottom:10px;line-height:1.55;">
+            统一管理已移除的美妆产品与妆容记录（保留 7 天，到期自动清理）。恢复产品按原标识独立恢复，绝不覆盖后来新建的同款产品。
+          </div>
+          <button type="button" class="btn btn-secondary btn-block" id="me-open-trash">打开最近删除（产品 ${trashProds.length} · 妆容 ${trashLooks.length}）</button>
+        `,
+      })}
+
+      ${renderSection({
         id: 'currency',
-        title: '首页资产币种',
+        title: '首页资产币种与外币录入',
         badge: `${currencyInfo.name} (${currencyInfo.code})`,
         badgeClass: 'pill-accent',
         bodyHtml: `
           <div class="muted-note" style="margin-bottom:10px;">
-            选择首页「资产总额」默认展示的币种（不做跨币种相加或汇率换算，多币种可在首页“各币种明细”查看）。
+            默认人民币；选择首页「资产总额」展示币种（不做跨币种相加或汇率换算，多币种可在首页“各币种明细”查看）。
           </div>
-          <div class="row-wrap">
+          <div class="row-wrap" style="margin-bottom:12px;">
             ${CURRENCY_ORDER.map((c) => {
               const info = CURRENCIES[c];
               return `<button type="button" class="chip ${selectedCurrency === c ? 'is-active' : ''}" data-me-currency="${esc(c)}">${esc(info.name)} (${esc(c)})</button>`;
             }).join('')}
           </div>
+          <label class="card-muted" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
+            <input type="checkbox" id="me-toggle-fx" ${fxEnabled ? 'checked' : ''} />
+            <span>添加/编辑产品时显示购买币种选择（开启外币录入）</span>
+          </label>
         `,
       })}
 
@@ -101,10 +122,10 @@ export function renderMeView({ store, viewState = {}, ctx }) {
       ${renderSection({
         id: 'backup',
         title: '数据管理、导出与备份',
-        badge: `${store.state.products.length} 款 · ${store.state.productItems.length} 件`,
+        badge: `${store.getActiveProducts().length} 款 · ${store.state.productItems.filter((i) => !i.deletedAt).length} 件`,
         bodyHtml: `
           <div class="card-muted" style="font-size:13px;margin-bottom:12px;">
-            <div>产品主档：${store.state.products.length} 款 ｜ 持有实例：${store.state.productItems.length} 件 ｜ 妆容：${store.state.looks.length} 篇</div>
+            <div>收录产品：${store.getActiveProducts().length} 款 ｜ 历史与持有总件数：${store.state.productItems.filter((i) => !i.deletedAt).length} 件 ｜ 妆容：${store.getActiveLooks().length} 篇</div>
             <div style="margin-top:4px;">IndexedDB 实选图片：${mediaStats.idbCount} 张（${formatBytes(mediaStats.totalBytes)}）｜ 内置离线示例图：${mediaStats.sampleCount} 张</div>
             <div style="margin-top:4px;">最近模拟备份：${store.state.settings.lastMockBackupAt ? esc(store.state.settings.lastMockBackupAt.slice(0, 19).replace('T', ' ')) : '尚未生成'}</div>
           </div>
@@ -195,6 +216,147 @@ export function bindMeEvents(container, { store, viewState = {}, actions, sheet,
       actions.rerender();
     });
   });
+  container.querySelector('#me-toggle-fx')?.addEventListener('change', (e) => {
+    store.updateSettings({ enableForeignCurrency: e.target.checked });
+    toast(e.target.checked ? '已开启外币录入选择' : '已设为添加时默认跟随首页币种');
+    actions.rerender();
+  });
+
+  container.querySelector('#me-open-trash')?.addEventListener('click', () => {
+    const renderTrashBody = () => {
+      const prods = store.getTrashProducts();
+      const looks = store.getTrashLooks();
+      if (prods.length === 0 && looks.length === 0) {
+        return `<div class="form-banner-info">最近删除是空的。移除的产品或删除的妆容会在这里暂存 7 天，可随时完整恢复。</div>`;
+      }
+      return `
+        <div class="stack">
+          <div class="form-banner-info" style="font-size:12px;">
+            恢复产品按原标识独立恢复，即使存在同名同色号新品也绝不覆盖合并；永久删除会完整保留历史妆容快照。
+          </div>
+          ${prods.length > 0 ? `
+            <div class="stack-sm">
+              <div style="font-weight:700;font-size:14px;">已移除的美妆产品（${prods.length}）</div>
+              ${prods.map(({ product, totalItemCount, remainingDays }) => {
+                const unit = product.quantityUnit || '件';
+                return `
+                  <div class="card-muted">
+                    <div class="row-between" style="gap:8px;">
+                      <strong style="font-size:14px;">${esc(product.name)}</strong>
+                      <span class="pill pill-amber">剩余 ${remainingDays} 天</span>
+                    </div>
+                    <div class="muted-note" style="margin-top:4px;">包含 ${totalItemCount} ${esc(unit)}记录 · 删除于 ${esc((product.deletedAt || '').slice(0, 10))}</div>
+                    <div class="row-wrap" style="margin-top:8px;justify-content:flex-end;">
+                      <button type="button" class="btn btn-soft btn-sm" data-trash-restore-prod="${esc(product.id)}">恢复产品</button>
+                      <button type="button" class="btn btn-danger btn-sm" data-trash-purge-prod="${esc(product.id)}">永久删除</button>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          ` : ''}
+          ${looks.length > 0 ? `
+            <div class="stack-sm">
+              <div style="font-weight:700;font-size:14px;">已删除的妆容（${looks.length}）</div>
+              ${looks.map(({ look, remainingDays }) => `
+                <div class="card-muted">
+                  <div class="row-between" style="gap:8px;">
+                    <strong style="font-size:14px;">${esc(look.name)}</strong>
+                    <span class="pill pill-amber">剩余 ${remainingDays} 天</span>
+                  </div>
+                  <div class="muted-note" style="margin-top:4px;">妆容日期：${esc(look.lookDate)} · 删除于 ${esc((look.deletedAt || '').slice(0, 10))}</div>
+                  <div class="row-wrap" style="margin-top:8px;justify-content:flex-end;">
+                    <button type="button" class="btn btn-soft btn-sm" data-trash-restore-look="${esc(look.id)}">恢复妆容</button>
+                    <button type="button" class="btn btn-danger btn-sm" data-trash-purge-look="${esc(look.id)}">永久删除</button>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          ` : ''}
+        </div>
+      `;
+    };
+
+    const mountTrashHandlers = (body) => {
+      body.querySelectorAll('[data-trash-restore-prod]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          store.restoreProductFromTrash(btn.dataset.trashRestoreProd);
+          body.querySelector('#me-trash-wrap').innerHTML = renderTrashBody();
+          mountTrashHandlers(body);
+          toast('已完整恢复产品及所属记录（与现有同名新品独立并存）');
+          actions.rerender();
+        });
+      });
+      body.querySelectorAll('[data-trash-purge-prod]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const pid = btn.dataset.trashPurgeProd;
+          const p = store.state.products.find((x) => x.id === pid);
+          if (!p) return;
+          const ok1 = await dialog.confirm({
+            title: '提前永久删除（第 1 步确认）',
+            message: `确定永久删除「${p.name}」吗？删除后无法恢复。`,
+            confirmLabel: '继续',
+            danger: true,
+          });
+          if (!ok1) return;
+          const ok2 = await dialog.confirm({
+            title: '二次确认',
+            message: '即将永久清除该产品及名下记录；历史妆容快照与仍被引用的照片仍会完整保留。确认永久删除？',
+            confirmLabel: '确认永久删除',
+            danger: true,
+          });
+          if (!ok2) return;
+          await store.permanentlyDeleteProductFromTrash(pid);
+          body.querySelector('#me-trash-wrap').innerHTML = renderTrashBody();
+          mountTrashHandlers(body);
+          toast('已永久删除（历史妆容快照保持完整）');
+          actions.rerender();
+        });
+      });
+      body.querySelectorAll('[data-trash-restore-look]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          store.restoreLookFromTrash(btn.dataset.trashRestoreLook);
+          body.querySelector('#me-trash-wrap').innerHTML = renderTrashBody();
+          mountTrashHandlers(body);
+          toast('妆容已恢复');
+          actions.rerender();
+        });
+      });
+      body.querySelectorAll('[data-trash-purge-look]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const lid = btn.dataset.trashPurgeLook;
+          const lk = store.state.looks.find((x) => x.id === lid);
+          if (!lk) return;
+          const ok1 = await dialog.confirm({
+            title: '提前永久删除妆容（第 1 步）',
+            message: `确定永久删除「${lk.name}」吗？`,
+            confirmLabel: '继续',
+            danger: true,
+          });
+          if (!ok1) return;
+          const ok2 = await dialog.confirm({
+            title: '二次确认',
+            message: '不会影响关联的美妆产品，确认永久删除？',
+            confirmLabel: '确认永久删除',
+            danger: true,
+          });
+          if (!ok2) return;
+          await store.permanentlyDeleteLook(lid);
+          body.querySelector('#me-trash-wrap').innerHTML = renderTrashBody();
+          mountTrashHandlers(body);
+          toast('妆容已永久删除');
+          actions.rerender();
+        });
+      });
+    };
+
+    sheet.open({
+      title: '最近删除（7 天回收站）',
+      bodyHtml: `<div id="me-trash-wrap">${renderTrashBody()}</div>`,
+      onMount: mountTrashHandlers,
+    });
+  });
+
   container.querySelectorAll('[data-me-sub]').forEach((btn) => {
     btn.addEventListener('click', () => {
       store.updateSettings({ simulatedSubscription: btn.dataset.meSub });

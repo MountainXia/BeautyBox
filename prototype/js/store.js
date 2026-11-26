@@ -22,9 +22,11 @@ import {
   applyExpiryConfirmation,
   deriveComputedExpiry,
   expiryStatus,
+  formatUsageDuration,
   isPositiveIntMonths,
   isValidDate,
   resolveExpiry,
+  resolveItemExpiryForDisplay,
   todayStr,
 } from './expiry.js';
 import {
@@ -41,6 +43,89 @@ import { PrototypeSaveError, recordDiagnostic } from './diagnostics.js';
 
 export const STORAGE_KEY = 'beautybox_prototype_v1';
 export const LOOK_TRASH_RETENTION_DAYS = 7;
+export const PRODUCT_TRASH_RETENTION_DAYS = 7;
+export const QUANTITY_UNITS = Object.freeze(['瓶', '支', '盒', '盘', '块', '个']);
+
+/** 各一级分类下的常用二级分类与默认数量单位 */
+export const CATEGORY_SUBCATEGORIES = Object.freeze({
+  'cat-base': [
+    { id: 'sub-foundation', name: '粉底液', defaultUnit: '瓶' },
+    { id: 'sub-cream-found', name: '粉底膏', defaultUnit: '盒' },
+    { id: 'sub-cushion', name: '气垫', defaultUnit: '盒' },
+    { id: 'sub-concealer', name: '遮瑕', defaultUnit: '支' },
+    { id: 'sub-primer', name: '妆前乳', defaultUnit: '支' },
+    { id: 'sub-sunbase', name: '隔离霜', defaultUnit: '支' },
+    { id: 'sub-loose-powder', name: '散粉', defaultUnit: '盒' },
+    { id: 'sub-pressed-powder', name: '粉饼', defaultUnit: '盒' },
+  ],
+  'cat-lip': [
+    { id: 'sub-lipstick', name: '口红', defaultUnit: '支' },
+    { id: 'sub-lipglaze', name: '唇釉', defaultUnit: '支' },
+    { id: 'sub-lipgloss', name: '唇蜜', defaultUnit: '支' },
+    { id: 'sub-lipliner', name: '唇线笔', defaultUnit: '支' },
+    { id: 'sub-lipbalm', name: '润唇膏', defaultUnit: '支' },
+  ],
+  'cat-eye': [
+    { id: 'sub-eyeshadow', name: '眼影盘', defaultUnit: '盘' },
+    { id: 'sub-eyeliner', name: '眼线笔', defaultUnit: '支' },
+    { id: 'sub-mascara', name: '睫毛膏', defaultUnit: '支' },
+    { id: 'sub-lashes', name: '假睫毛', defaultUnit: '盒' },
+  ],
+  'cat-cheek': [
+    { id: 'sub-blush', name: '腮红', defaultUnit: '块' },
+    { id: 'sub-contour', name: '修容', defaultUnit: '盘' },
+    { id: 'sub-highlighter', name: '高光', defaultUnit: '块' },
+  ],
+  'cat-brow': [
+    { id: 'sub-browpencil', name: '眉笔', defaultUnit: '支' },
+    { id: 'sub-browpowder', name: '眉粉', defaultUnit: '盒' },
+    { id: 'sub-browgel', name: '染眉膏', defaultUnit: '支' },
+  ],
+  'cat-care': [
+    { id: 'sub-serum', name: '精华', defaultUnit: '瓶' },
+    { id: 'sub-cream', name: '面霜', defaultUnit: '瓶' },
+    { id: 'sub-sunscreen', name: '防晒', defaultUnit: '支' },
+    { id: 'sub-toner', name: '化妆水', defaultUnit: '瓶' },
+  ],
+});
+
+export function findSubCategoryInfo(categoryId, subCategoryId) {
+  const list = CATEGORY_SUBCATEGORIES[categoryId] || [];
+  const sub = list.find((s) => s.id === subCategoryId) || null;
+  const fallbackUnit =
+    categoryId === 'cat-lip' || categoryId === 'cat-brow'
+      ? '支'
+      : categoryId === 'cat-eye'
+        ? '盘'
+        : categoryId === 'cat-cheek'
+          ? '块'
+          : categoryId === 'cat-base' || categoryId === 'cat-care'
+            ? '瓶'
+            : '件';
+  return {
+    subCategoryName: sub?.name || '',
+    defaultUnit: sub?.defaultUnit || fallbackUnit,
+  };
+}
+
+/**
+ * 选填产品名称自动组合：
+ * - 用户填写了自定义名称时优先采用
+ * - 留空时按「品牌 + 分类（优先二级分类） + 色号」拼已有项，不产生多余分隔符
+ */
+export function composeProductDisplayName({
+  customName = '',
+  brandName = '',
+  categoryName = '',
+  subCategoryName = '',
+  shade = '',
+} = {}) {
+  const cleanCustom = String(customName || '').trim();
+  if (cleanCustom) return cleanCustom;
+  const catLabel = String(subCategoryName || categoryName || '').trim();
+  const parts = [String(brandName || '').trim(), catLabel, String(shade || '').trim()].filter(Boolean);
+  return parts.join(' ') || '未命名产品';
+}
 
 export const ACQUISITION_PRESETS = Object.freeze([
   '专柜',
@@ -124,18 +209,373 @@ export function getItemAcquisitionDisplay(item) {
   return (item.purchaseChannel || '').trim();
 }
 
-/** 视为“仍在持有”的实例状态（未用完、未丢弃、未转让） */
+/** 视为“仍在持有”的实例状态（未记录 / 未开封 / 使用中 / 兼容旧闲置） */
 export const ITEM_STATUSES = Object.freeze({
-  unopened: Object.freeze({ key: 'unopened', label: '未开封', held: true }),
-  in_use: Object.freeze({ key: 'in_use', label: '使用中', held: true }),
-  idle: Object.freeze({ key: 'idle', label: '闲置中', held: true }),
-  used_up: Object.freeze({ key: 'used_up', label: '已用完', held: false }),
-  disposed: Object.freeze({ key: 'disposed', label: '已弃用', held: false }),
-  transferred: Object.freeze({ key: 'transferred', label: '已转让', held: false }),
+  unrecorded: Object.freeze({ key: 'unrecorded', label: '未记录', listHint: '待记录使用状态', held: true, pillClass: '' }),
+  unopened: Object.freeze({ key: 'unopened', label: '未开封', listHint: '未开封', held: true, pillClass: 'pill-sage' }),
+  in_use: Object.freeze({ key: 'in_use', label: '使用中', listHint: '使用中', held: true, pillClass: 'pill-accent' }),
+  idle: Object.freeze({ key: 'idle', label: '闲置中', listHint: '闲置中', held: true, pillClass: '' }),
+  used_up: Object.freeze({ key: 'used_up', label: '已用完', listHint: '已用完', held: false, pillClass: '' }),
+  disposed: Object.freeze({ key: 'disposed', label: '已弃用', listHint: '已弃用', held: false, pillClass: '' }),
+  transferred: Object.freeze({ key: 'transferred', label: '已转让', listHint: '已转让', held: false, pillClass: '' }),
 });
+
+/** 界面允许用户主动选填或切换的使用状态（「未记录」仅作为未填时的系统默认兜底） */
+export const USER_SELECTABLE_STATUSES = Object.freeze(['unopened', 'in_use', 'used_up']);
 
 export function isHeldStatus(status) {
   return Boolean(ITEM_STATUSES[status]?.held);
+}
+
+/** 校验单件是否存在状态与开封日期冲突 */
+export function detectItemDataConflict(item) {
+  if (!item) return { hasConflict: false, message: '' };
+  const hasOpened = String(item.openedDate || '').trim() !== '';
+  if (item.status === 'unrecorded' && hasOpened) {
+    return {
+      hasConflict: true,
+      message: '数据校验异常：使用状态为「未记录」，却存在开封日期，请核对使用状态。',
+    };
+  }
+  if (item.status === 'unopened' && hasOpened) {
+    return {
+      hasConflict: true,
+      message: '数据校验异常：使用状态为「未开封」，却存在开封日期。',
+    };
+  }
+  return { hasConflict: false, message: '' };
+}
+
+/**
+ * 独立判断单件的「待记录使用状态」与「有效期信息待完善」（严格互斥、不重复计入）
+ */
+export function getItemExpiryCompleteness(item) {
+  const status = item?.status || 'unrecorded';
+  const conflict = detectItemDataConflict(item);
+  const isPendingStatus = status === 'unrecorded' && !conflict.hasConflict;
+
+  if (status === 'used_up' || status === 'disposed' || status === 'transferred' || status === 'unrecorded' || conflict.hasConflict) {
+    return {
+      status,
+      isPendingStatus,
+      isIncompleteExpiry: false,
+      isComplete: status !== 'unrecorded' && !conflict.hasConflict,
+      missingReason: '',
+      conflict,
+    };
+  }
+
+  const resolved = resolveItemExpiryForDisplay(item);
+  if (resolved.date) {
+    return {
+      status,
+      isPendingStatus: false,
+      isIncompleteExpiry: false,
+      isComplete: true,
+      missingReason: '',
+      conflict,
+    };
+  }
+
+  let missingReason = '缺少到期信息（可补充或直接填写确认到期日）';
+  if (status === 'unopened') {
+    const hasMfg = Boolean(String(item?.manufactureDate || '').trim());
+    const hasShelf = Boolean(item?.unopenedShelfMonths);
+    if (!hasMfg && !hasShelf) missingReason = '缺生产日期与未开封保质期（或直接确认到期日）';
+    else if (!hasMfg) missingReason = '缺生产日期（或直接确认到期日）';
+    else if (!hasShelf) missingReason = '缺未开封保质期（或直接确认到期日）';
+  } else if (status === 'in_use') {
+    const hasOpened = Boolean(String(item?.openedDate || '').trim());
+    const hasPao = Boolean(item?.paoMonths);
+    if (!hasOpened && !hasPao) missingReason = '缺开封日期与 PAO（或直接确认到期日）';
+    else if (!hasPao) missingReason = '缺 PAO 期限（或直接确认到期日）';
+    else if (!hasOpened) missingReason = '缺开封日期（或直接确认到期日）';
+  } else if (status === 'idle') {
+    missingReason = '缺 PAO / 保质期（或直接确认到期日）';
+  }
+
+  return {
+    status,
+    isPendingStatus: false,
+    isIncompleteExpiry: true,
+    isComplete: false,
+    missingReason,
+    conflict,
+  };
+}
+
+export const STATUS_FILTER_META = Object.freeze({
+  all: { key: 'all', label: '当前拥有' },
+  in_use: { key: 'in_use', label: '使用中' },
+  unopened: { key: 'unopened', label: '未开封' },
+  pending: { key: 'pending', label: '待补充信息' },
+  pending_status: { key: 'pending_status', label: '待记录使用状态' },
+  incomplete_expiry: { key: 'incomplete_expiry', label: '有效期信息待完善' },
+  near: { key: 'near', label: '临期/过期' },
+  used_up: { key: 'used_up', label: '已用完记录' },
+});
+
+export function summarizeProductCounts(product, items, { today = todayStr(), nearDays = null } = {}) {
+  const activeItems = items.filter((i) => i.productId === product.id && !i.archivedAt && !i.deletedAt);
+  const heldItems = activeItems.filter((i) => isHeldStatus(i.status));
+  // 历史用完同时涵盖已用完及曾归档的旧用完记录（不计入当前拥有，但保留历史展示）
+  const usedUpItems = items.filter((i) => i.productId === product.id && !i.deletedAt && i.status === 'used_up');
+
+  let inUseCount = 0;
+  let unopenedCount = 0;
+  let idleCount = 0;
+  let unrecordedCount = 0;
+  let pendingStatusCount = 0;
+  let incompleteExpiryCount = 0;
+  let conflictCount = 0;
+  let nearExpiryCount = 0;
+  let expiredCount = 0;
+
+  for (const item of heldItems) {
+    if (item.status === 'in_use') inUseCount += 1;
+    else if (item.status === 'unopened') unopenedCount += 1;
+    else if (item.status === 'idle') idleCount += 1;
+    else if (item.status === 'unrecorded') unrecordedCount += 1;
+
+    const comp = getItemExpiryCompleteness(item);
+    if (comp.conflict.hasConflict) conflictCount += 1;
+    if (comp.isPendingStatus) pendingStatusCount += 1;
+    if (comp.isIncompleteExpiry) incompleteExpiryCount += 1;
+
+    const st = expiryStatus(resolveItemExpiryForDisplay(item), today, nearDays);
+    if (st.key === 'near') nearExpiryCount += 1;
+    else if (st.key === 'expired') expiredCount += 1;
+  }
+
+  return {
+    heldCount: heldItems.length,
+    inUseCount,
+    unopenedCount,
+    idleCount,
+    unrecordedCount,
+    pendingStatusCount,
+    incompleteExpiryCount,
+    conflictCount,
+    usedUpCount: usedUpItems.length,
+    nearExpiryCount,
+    expiredCount,
+    heldItems,
+    usedUpItems,
+  };
+}
+
+export function filterProductItems(product, items, filterKey = 'all', { today = todayStr(), nearDays = null } = {}) {
+  const key = STATUS_FILTER_META[filterKey] ? filterKey : 'all';
+  const pool =
+    key === 'used_up'
+      ? items.filter((i) => i.productId === product.id && !i.deletedAt)
+      : items.filter((i) => i.productId === product.id && !i.archivedAt && !i.deletedAt);
+
+  const matchedItems = pool.filter((item) => {
+    if (key === 'used_up') return item.status === 'used_up';
+    if (!isHeldStatus(item.status)) return false;
+    if (key === 'all') return true;
+    if (key === 'in_use') return item.status === 'in_use' || item.status === 'idle';
+    if (key === 'unopened') return item.status === 'unopened';
+    if (key === 'pending_status') return getItemExpiryCompleteness(item).isPendingStatus;
+    if (key === 'incomplete_expiry') return getItemExpiryCompleteness(item).isIncompleteExpiry;
+    if (key === 'pending') {
+      const comp = getItemExpiryCompleteness(item);
+      return comp.isPendingStatus || comp.isIncompleteExpiry;
+    }
+    if (key === 'near') {
+      const exp = expiryStatus(resolveItemExpiryForDisplay(item), today, nearDays);
+      return exp.key === 'near' || exp.key === 'expired';
+    }
+    return false;
+  });
+
+  let matchedInUseCount = 0;
+  let matchedUnopenedCount = 0;
+  let matchedPendingStatusCount = 0;
+  let matchedIncompleteExpiryCount = 0;
+  let matchedUsedUpCount = 0;
+  let matchedExpiredCount = 0;
+  let matchedNearCount = 0;
+  const matchedMissingReasons = [];
+
+  for (const item of matchedItems) {
+    if (item.status === 'in_use' || item.status === 'idle') matchedInUseCount += 1;
+    else if (item.status === 'unopened') matchedUnopenedCount += 1;
+    else if (item.status === 'used_up') matchedUsedUpCount += 1;
+
+    const comp = getItemExpiryCompleteness(item);
+    if (comp.isPendingStatus) matchedPendingStatusCount += 1;
+    if (comp.isIncompleteExpiry) {
+      matchedIncompleteExpiryCount += 1;
+      if (comp.missingReason && !matchedMissingReasons.includes(comp.missingReason)) {
+        matchedMissingReasons.push(comp.missingReason);
+      }
+    }
+
+    if (item.status !== 'used_up') {
+      const exp = expiryStatus(resolveItemExpiryForDisplay(item), today, nearDays);
+      if (exp.key === 'expired') matchedExpiredCount += 1;
+      else if (exp.key === 'near') matchedNearCount += 1;
+    }
+  }
+
+  return {
+    filterKey: key,
+    matchedItems,
+    matchedCount: matchedItems.length,
+    matchedInUseCount,
+    matchedUnopenedCount,
+    matchedPendingStatusCount,
+    matchedIncompleteExpiryCount,
+    matchedMissingReasons,
+    matchedUsedUpCount,
+    matchedExpiredCount,
+    matchedNearCount,
+  };
+}
+
+export function evaluateQuickStatusOption(item, targetStatus) {
+  const cur = item?.status || 'unrecorded';
+  if (targetStatus === 'unrecorded') {
+    return { allowed: false, isCurrent: cur === 'unrecorded', requiresConfirm: false, reason: '未记录仅作系统默认状态，不可手动选择。' };
+  }
+  if (cur === targetStatus) {
+    return { allowed: true, isCurrent: true, requiresConfirm: false, reason: '' };
+  }
+  if (targetStatus === 'unopened') {
+    if (cur === 'used_up') {
+      return { allowed: false, isCurrent: false, requiresConfirm: false, reason: '已用完产品不能直接改为未开封，请先恢复为使用中。' };
+    }
+    if (cur === 'in_use' || cur === 'idle') {
+      return { allowed: true, isCurrent: false, requiresConfirm: 'restore_unopened', reason: '' };
+    }
+    return { allowed: true, isCurrent: false, requiresConfirm: false, reason: '' };
+  }
+  if (targetStatus === 'in_use') {
+    if (cur === 'used_up') return { allowed: true, isCurrent: false, requiresConfirm: 'restore_in_use', reason: '' };
+    if (cur === 'unopened') return { allowed: true, isCurrent: false, requiresConfirm: 'open_today', reason: '' };
+    return { allowed: true, isCurrent: false, requiresConfirm: false, reason: '' };
+  }
+  if (targetStatus === 'used_up') {
+    return { allowed: true, isCurrent: false, requiresConfirm: 'mark_used_up', reason: '' };
+  }
+  return { allowed: false, isCurrent: false, requiresConfirm: false, reason: '当前产品状态不支持此操作。' };
+}
+
+export function hasLifecycleRecord(item) {
+  if (!item) return false;
+  const hasPrice =
+    (item.purchasePriceMinor !== null && item.purchasePriceMinor !== undefined && item.purchasePriceMinor !== '') ||
+    String(item.purchasePriceInput || '').trim() !== '';
+  const hasRemainingUsed =
+    item.remainingPercent !== undefined &&
+    item.remainingPercent !== null &&
+    item.remainingPercent !== '' &&
+    Number(item.remainingPercent) !== 100;
+  return Boolean(
+    item.manufactureDate ||
+      item.unopenedShelfMonths ||
+      item.openedDate ||
+      item.usedUpDate ||
+      item.paoMonths ||
+      item.confirmedExpiryDate ||
+      item.purchaseDate ||
+      hasPrice ||
+      item.acquisitionMethod ||
+      item.acquisitionPreset ||
+      item.acquisitionCustomText ||
+      hasRemainingUsed,
+  );
+}
+
+/**
+ * 统一的交互层状态与字段一致性校验（C1 已验收规则落地至正式 store）
+ */
+export function validateItemTransitionAndFields({ previousItem = null, nextInput }) {
+  const rawStatus = String(nextInput?.status || '').trim();
+  let targetStatus = rawStatus;
+  const openedDate = String(nextInput?.openedDate || '').trim() || null;
+  let usedUpDate = String(nextInput?.usedUpDate || '').trim() || null;
+  const manufactureDate = String(nextInput?.manufactureDate || '').trim() || null;
+  const purchaseDate = String(nextInput?.purchaseDate || '').trim() || null;
+  const unopenedShelfMonths = nextInput?.unopenedShelfMonths ? String(nextInput.unopenedShelfMonths).trim() : '';
+  const paoMonths = nextInput?.paoMonths ? String(nextInput.paoMonths).trim() : '';
+  const confirmedExpiryDate = String(nextInput?.confirmedExpiryDate || '').trim() || null;
+
+  const remainingRaw =
+    nextInput?.remainingPercent === '' || nextInput?.remainingPercent === null || nextInput?.remainingPercent === undefined
+      ? (targetStatus === 'used_up' ? 0 : 100)
+      : Number.parseInt(String(nextInput.remainingPercent), 10);
+  if (!Number.isInteger(remainingRaw) || remainingRaw < 0 || remainingRaw > 100) {
+    return { ok: false, error: '剩余比例必须在 0 到 100 之间。' };
+  }
+
+  const nextHasLifecycle = hasLifecycleRecord({
+    ...nextInput,
+    manufactureDate,
+    unopenedShelfMonths,
+    openedDate,
+    usedUpDate,
+    paoMonths,
+    confirmedExpiryDate,
+    purchaseDate,
+    remainingPercent: remainingRaw,
+  });
+
+  if (!targetStatus || targetStatus === 'unrecorded') {
+    if (rawStatus === 'unrecorded' && openedDate) {
+      return { ok: false, error: '使用状态为「未记录」时不能存在开封日期，请改为「使用中」或清空开封日期。' };
+    }
+    if (previousItem && previousItem.status && previousItem.status !== 'unrecorded') {
+      return { ok: false, error: '已有记录的产品不能改为未记录，请选择未开封、使用中或已用完。' };
+    }
+    if (!nextHasLifecycle) targetStatus = 'unrecorded';
+    else if (usedUpDate || remainingRaw === 0) targetStatus = 'used_up';
+    else if (openedDate) targetStatus = 'in_use';
+    else targetStatus = 'unopened';
+  }
+
+  if (!ITEM_STATUSES[targetStatus]) {
+    return { ok: false, error: '请选择有效的使用状态。' };
+  }
+  if (targetStatus === 'unopened') {
+    if (previousItem && previousItem.status === 'used_up') {
+      return { ok: false, error: '已用完产品不能直接改为未开封，请先恢复为使用中。' };
+    }
+    if (openedDate) {
+      return { ok: false, error: '未开封状态不能保留开封日期，请先清空开封日期或选择「使用中」。' };
+    }
+  }
+  if (targetStatus === 'in_use' && !openedDate) {
+    return { ok: false, error: '「使用中」状态必须填写有效的开封日期。' };
+  }
+  if (targetStatus === 'used_up') {
+    if (!usedUpDate) usedUpDate = todayStr();
+    if (openedDate && isValidDate(openedDate) && isValidDate(usedUpDate) && usedUpDate < openedDate) {
+      return { ok: false, error: '用完日期不能早于开封日期。' };
+    }
+  } else {
+    usedUpDate = null;
+  }
+  if (previousItem?.status === 'used_up' && targetStatus === 'in_use' && remainingRaw <= 0) {
+    return { ok: false, error: '恢复使用中时，剩余比例必须大于 0%。' };
+  }
+
+  return {
+    ok: true,
+    normalized: {
+      status: targetStatus,
+      manufactureDate,
+      unopenedShelfMonths,
+      openedDate,
+      usedUpDate,
+      paoMonths,
+      confirmedExpiryDate,
+      purchaseDate,
+      remainingPercent: targetStatus === 'used_up' ? 0 : remainingRaw,
+    },
+  };
 }
 
 export function uid(prefix = 'id') {
@@ -151,13 +591,14 @@ function deepClone(obj) {
 
 export function createEmptyState(prevSettings = {}) {
   return {
-    version: 1,
+    version: 2,
     categories: [
       { id: 'cat-base', name: '底妆', sortOrder: 1, isSystem: true },
       { id: 'cat-lip', name: '唇妆', sortOrder: 2, isSystem: true },
       { id: 'cat-eye', name: '眼妆', sortOrder: 3, isSystem: true },
       { id: 'cat-cheek', name: '腮红修容', sortOrder: 4, isSystem: true },
-      { id: 'cat-care', name: '护肤', sortOrder: 5, isSystem: true },
+      { id: 'cat-brow', name: '眉妆', sortOrder: 5, isSystem: true },
+      { id: 'cat-care', name: '护肤', sortOrder: 6, isSystem: true },
     ],
     brands: [],
     mediaAssets: [],
@@ -176,6 +617,7 @@ export function createEmptyState(prevSettings = {}) {
       onboardingDismissed: true,
       nearExpiryDays: prevSettings.nearExpiryDays ?? null,
       homeSelectedCurrency: isSupportedCurrency(prevSettings.homeSelectedCurrency) ? prevSettings.homeSelectedCurrency : 'CNY',
+      enableForeignCurrency: Boolean(prevSettings.enableForeignCurrency),
       simulatedSubscription: prevSettings.simulatedSubscription || 'free',
       icloudEnabledMock: false,
       lastMockBackupAt: null,
@@ -227,11 +669,34 @@ export class PrototypeStore {
     return seed;
   }
 
-  /** 向后兼容旧版 localStorage 缓存字段，绝不清空用户已有记录 */
+  /** 向后兼容旧版 localStorage 缓存字段并执行 version 1 -> 2 迁移，绝不清空用户已有记录 */
   normalizeState(state) {
     state.settings = state.settings && typeof state.settings === 'object' ? state.settings : {};
     if (!isSupportedCurrency(state.settings.homeSelectedCurrency)) {
       state.settings.homeSelectedCurrency = 'CNY';
+    }
+    if (state.settings.enableForeignCurrency === undefined) {
+      state.settings.enableForeignCurrency = false;
+    }
+    if (!Array.isArray(state.categories)) state.categories = [];
+    if (!state.categories.some((c) => c.id === 'cat-brow')) {
+      state.categories.push({ id: 'cat-brow', name: '眉妆', sortOrder: 5, isSystem: true });
+    }
+    if (!Array.isArray(state.products)) state.products = [];
+    for (const prod of state.products) {
+      if (prod.deletedAt === undefined) prod.deletedAt = null;
+      if (prod.purgeAt === undefined) prod.purgeAt = null;
+      if (prod.subCategoryId === undefined) prod.subCategoryId = '';
+      if (prod.customName === undefined) prod.customName = prod.name || '';
+      if (!prod.quantityUnit) {
+        prod.quantityUnit = findSubCategoryInfo(prod.categoryId, prod.subCategoryId).defaultUnit || '件';
+      }
+      if (prod.specificationValue === undefined && prod.specification) {
+        const parts = parseSpecificationParts(prod.specification);
+        prod.specificationValue = parts.value;
+        prod.specificationUnit = parts.unit;
+        prod.specificationCustomUnit = parts.customUnit;
+      }
     }
     if (!Array.isArray(state.productItems)) state.productItems = [];
     for (const item of state.productItems) {
@@ -244,12 +709,17 @@ export class PrototypeStore {
         item.unopenedComputedExpiry = dual.unopenedComputedExpiry;
         item.openedComputedExpiry = dual.openedComputedExpiry;
       }
+      if (item.usedUpDate === undefined) {
+        item.usedUpDate = item.status === 'used_up' ? ((item.updatedAt || '').slice(0, 10) || null) : null;
+      }
+      if (item.deletedAt === undefined) item.deletedAt = null;
     }
     if (!Array.isArray(state.looks)) state.looks = [];
     for (const look of state.looks) {
       if (look.deletedAt === undefined) look.deletedAt = null;
       if (look.purgeAt === undefined) look.purgeAt = null;
     }
+    state.version = 2;
     return state;
   }
 
@@ -466,18 +936,61 @@ export class PrototypeStore {
     return true;
   }
 
-  /* ---------------- 产品与持有实例 CRUD ---------------- */
+  /* ---------------- 产品与单件管理 CRUD（含 7 天回收站） ---------------- */
 
-  getItemsForProduct(productId, { includeArchived = true } = {}) {
+  getActiveProducts() {
+    return this.state.products.filter((p) => !p.archivedAt && !p.deletedAt);
+  }
+
+  getItemsForProduct(productId, { includeArchived = true, includeDeleted = false } = {}) {
     return this.state.productItems
-      .filter((i) => i.productId === productId && (includeArchived || !i.archivedAt))
-      .sort((a, b) => Number(!a.archivedAt) - Number(!b.archivedAt) || b.updatedAt.localeCompare(a.updatedAt));
+      .filter((i) => i.productId === productId && (includeDeleted || !i.deletedAt) && (includeArchived || !i.archivedAt))
+      .sort((a, b) => Number(!a.archivedAt) - Number(!b.archivedAt) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  }
+
+  getTrashProducts(now = new Date()) {
+    const nowMs = this._toNowMs(now);
+    const retentionMs = PRODUCT_TRASH_RETENTION_DAYS * 86400000;
+    return this.state.products
+      .filter((p) => Boolean(p.deletedAt))
+      .map((p) => {
+        const purgeMs = Number.isFinite(Date.parse(p.purgeAt || ''))
+          ? Date.parse(p.purgeAt)
+          : Date.parse(p.deletedAt) + retentionMs;
+        const remainingMs = Math.max(0, purgeMs - nowMs);
+        const remainingDays = Math.max(0, Math.ceil(remainingMs / 86400000));
+        const items = this.state.productItems.filter((i) => i.productId === p.id && !i.deletedAt);
+        const heldCount = items.filter((i) => !i.archivedAt && isHeldStatus(i.status)).length;
+        return { product: p, totalItemCount: items.length, heldCount, remainingDays, expired: nowMs >= purgeMs };
+      })
+      .sort((a, b) => String(b.product.deletedAt).localeCompare(String(a.product.deletedAt)));
+  }
+
+  _buildProductNameFields(input, categoryId, existing = null) {
+    const catName = this.getCategoryName(categoryId);
+    const subCategoryId = (input.subCategoryId ?? existing?.subCategoryId ?? '').trim();
+    const { subCategoryName, defaultUnit } = findSubCategoryInfo(categoryId, subCategoryId);
+    const customName =
+      input.customName !== undefined
+        ? String(input.customName || '').trim()
+        : input.name !== undefined
+          ? String(input.name || '').trim()
+          : String(existing?.customName || '').trim();
+    const brandName = input.brandName !== undefined ? String(input.brandName || '').trim() : this.getBrandName(existing?.brandId);
+    const shade = input.shade !== undefined ? String(input.shade || '').trim() : String(existing?.shade || '').trim();
+    const resolvedName = composeProductDisplayName({
+      customName,
+      brandName,
+      categoryName: catName,
+      subCategoryName,
+      shade,
+    });
+    const quantityUnit = (input.quantityUnit ?? existing?.quantityUnit ?? '').trim() || defaultUnit || '件';
+    return { customName, subCategoryId, shade, resolvedName, quantityUnit };
   }
 
   saveProduct(input) {
-    const name = (input.name || '').trim();
     const categoryId = (input.categoryId || '').trim();
-    if (!name) return this.failValidation('product', 'name', '请填写产品名称');
     if (!categoryId || !this.state.categories.some((c) => c.id === categoryId)) {
       return this.failValidation('product', 'categoryId', '请选择产品分类');
     }
@@ -485,7 +998,10 @@ export class PrototypeStore {
     return this.runPersistMutation('product', () => {
       const now = new Date().toISOString();
       const brandId = this.ensureBrandId(input.brandName || '');
+      const existing = input.id ? this.state.products.find((p) => p.id === input.id) : null;
+      if (input.id && !existing) return { ok: false, error: '未找到要编辑的产品' };
 
+      const { customName, subCategoryId, shade, resolvedName, quantityUnit } = this._buildProductNameFields(input, categoryId, existing);
       const specStr = formatSpecification({
         value: input.specificationValue,
         unit: input.specificationUnit,
@@ -493,17 +1009,18 @@ export class PrototypeStore {
         fallback: input.specification,
       });
 
-      if (input.id) {
-        const existing = this.state.products.find((p) => p.id === input.id);
-        if (!existing) return { ok: false, error: '未找到要编辑的产品' };
-        existing.name = name;
+      if (existing) {
+        existing.name = resolvedName;
+        existing.customName = customName;
         existing.categoryId = categoryId;
+        existing.subCategoryId = subCategoryId;
         existing.brandId = brandId;
+        existing.quantityUnit = quantityUnit;
         existing.specification = specStr;
         existing.specificationValue = (input.specificationValue || '').trim();
         existing.specificationUnit = (input.specificationUnit || '').trim();
         existing.specificationCustomUnit = (input.specificationCustomUnit || '').trim();
-        existing.shade = (input.shade || '').trim();
+        existing.shade = shade;
         existing.texture = (input.texture || '').trim();
         existing.finish = (input.finish || '').trim();
         existing.notesPrivate = (input.notesPrivate || '').trim();
@@ -518,18 +1035,23 @@ export class PrototypeStore {
         id: uid('prod'),
         brandId,
         categoryId,
-        name,
+        subCategoryId,
+        name: resolvedName,
+        customName,
+        quantityUnit,
         specification: specStr,
         specificationValue: (input.specificationValue || '').trim(),
         specificationUnit: (input.specificationUnit || '').trim(),
         specificationCustomUnit: (input.specificationCustomUnit || '').trim(),
-        shade: (input.shade || '').trim(),
+        shade,
         texture: (input.texture || '').trim(),
         finish: (input.finish || '').trim(),
         notesPrivate: (input.notesPrivate || '').trim(),
         createdAt: now,
         updatedAt: now,
         archivedAt: null,
+        deletedAt: null,
+        purgeAt: null,
       };
       this.state.products.push(product);
       if (input.newAssetId) {
@@ -537,6 +1059,123 @@ export class PrototypeStore {
       }
       return { ok: true, product };
     });
+  }
+
+  /**
+   * 原子保存连续单页「+ 添加产品」及其名下 1~N 件 ProductItem（默认跳过详情时自动记为未记录）。
+   */
+  saveProductWithItems({ productInput = {}, quantity = 1, batchMode = 'same', itemInputs = [] } = {}) {
+    const qty = Number.parseInt(String(quantity ?? 1), 10);
+    if (!Number.isInteger(qty) || qty < 1 || qty > 20) {
+      return this.failValidation('product', 'quantity', '拥有数量必须在 1 到 20 之间');
+    }
+    const categoryId = String(productInput.categoryId || '').trim();
+    if (!categoryId || !this.state.categories.some((c) => c.id === categoryId)) {
+      return this.failValidation('product', 'categoryId', '请选择产品分类');
+    }
+
+    const now = new Date().toISOString();
+    const pendingItems = [];
+    for (let i = 0; i < qty; i++) {
+      const src = batchMode === 'per_item' ? (itemInputs[i] || {}) : (itemInputs[0] || {});
+      const check = validateItemTransitionAndFields({ previousItem: null, nextInput: src });
+      if (!check.ok) {
+        return this.failValidation('product_item', 'status', `第 ${i + 1} 件校验未通过：${check.error}`);
+      }
+      const built = this._buildValidatedItemRecord({
+        productId: 'pending',
+        targetPrev: null,
+        input: {
+          ...src,
+          ...check.normalized,
+        },
+        now,
+      });
+      if (!built.ok) {
+        return this.failValidation('product_item', built.field || 'item', `第 ${i + 1} 件信息无效：${built.error}`);
+      }
+      pendingItems.push(built.record);
+    }
+
+    return this.runPersistMutation('product', () => {
+      const brandId = this.ensureBrandId(productInput.brandName || '');
+      const { customName, subCategoryId, shade, resolvedName, quantityUnit } = this._buildProductNameFields(productInput, categoryId, null);
+      const specStr = formatSpecification({
+        value: productInput.specificationValue,
+        unit: productInput.specificationUnit,
+        customUnit: productInput.specificationCustomUnit,
+        fallback: productInput.specification,
+      });
+      const product = {
+        id: uid('prod'),
+        brandId,
+        categoryId,
+        subCategoryId,
+        name: resolvedName,
+        customName,
+        quantityUnit,
+        specification: specStr,
+        specificationValue: (productInput.specificationValue || '').trim(),
+        specificationUnit: (productInput.specificationUnit || '').trim(),
+        specificationCustomUnit: (productInput.specificationCustomUnit || '').trim(),
+        shade,
+        texture: (productInput.texture || '').trim(),
+        finish: (productInput.finish || '').trim(),
+        notesPrivate: (productInput.notesPrivate || '').trim(),
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+        deletedAt: null,
+        purgeAt: null,
+      };
+      this.state.products.push(product);
+      if (productInput.newAssetId) {
+        this.addProductPhoto(product.id, productInput.newAssetId, { makeCover: true });
+      }
+      const createdItems = [];
+      for (const rec of pendingItems) {
+        rec.productId = product.id;
+        this.state.productItems.push(rec);
+        createdItems.push(rec);
+      }
+      return { ok: true, product, items: createdItems };
+    });
+  }
+
+  /** 将产品整款移入 7 天最近删除，不影响已记录的历史妆容快照 */
+  softDeleteProductToTrash(productId, now = new Date()) {
+    const prod = this.state.products.find((p) => p.id === productId);
+    if (!prod) return this.failValidation('product', 'id', '产品不存在');
+    if (prod.deletedAt) return { ok: true, product: prod };
+    const nowMs = this._toNowMs(now);
+    const deletedIso = new Date(nowMs).toISOString();
+    const purgeIso = new Date(nowMs + PRODUCT_TRASH_RETENTION_DAYS * 86400000).toISOString();
+    return this.runPersistMutation('product', () => {
+      const target = this.state.products.find((p) => p.id === productId);
+      target.deletedAt = deletedIso;
+      target.purgeAt = purgeIso;
+      target.updatedAt = deletedIso;
+      return { ok: true, product: target };
+    });
+  }
+
+  /** 按产品 UUID 精确恢复，绝不覆盖或合并用户后来新建的同款产品 */
+  restoreProductFromTrash(productId) {
+    const prod = this.state.products.find((p) => p.id === productId);
+    if (!prod) return this.failValidation('product', 'id', '产品不存在');
+    if (!prod.deletedAt) return { ok: true, product: prod };
+    const nowIso = new Date().toISOString();
+    return this.runPersistMutation('product', () => {
+      const target = this.state.products.find((p) => p.id === productId);
+      target.deletedAt = null;
+      target.purgeAt = null;
+      target.updatedAt = nowIso;
+      return { ok: true, product: target };
+    });
+  }
+
+  async permanentlyDeleteProductFromTrash(productId) {
+    return this.deleteProductSafe(productId);
   }
 
   toggleArchiveProduct(productId) {
@@ -604,17 +1243,9 @@ export class PrototypeStore {
     return res;
   }
 
-  /**
-   * 保存或更新 ProductItem。
-   * - 金额严格按 currencyCode 精度从十进制字符串转换，绝不自动按 2 位或浮点计算。
-   * - 有效期严格遵守不猜测原则，并保护已确认的到期日不被自动覆盖。
-   */
-  saveProductItem(input) {
-    const product = this.state.products.find((p) => p.id === input.productId);
-    if (!product) return this.failValidation('product_item', 'productId', '所属产品不存在');
-
-    const status = input.status || 'in_use';
-    if (!ITEM_STATUSES[status]) return this.failValidation('product_item', 'status', '请选择有效的持有状态');
+  _buildValidatedItemRecord({ productId, targetPrev = null, input, now }) {
+    const status = input.status || 'unrecorded';
+    if (!ITEM_STATUSES[status]) return this.failValidation('product_item', 'status', '请选择有效的使用状态');
 
     let purchasePriceMinor = null;
     let currencyCode = null;
@@ -656,6 +1287,8 @@ export class PrototypeStore {
     if (!md.ok) return md;
     const od = checkDate(input.openedDate, 'openedDate', '开封日期');
     if (!od.ok) return od;
+    const ud = checkDate(input.usedUpDate, 'usedUpDate', '用完日期');
+    if (!ud.ok) return ud;
     const cd = checkDate(input.confirmedExpiryDate, 'confirmedExpiryDate', '用户确认到期日');
     if (!cd.ok) return cd;
     const sm = checkMonths(input.unopenedShelfMonths, 'unopenedShelfMonths', '未开封保质期');
@@ -663,68 +1296,110 @@ export class PrototypeStore {
     const pm = checkMonths(input.paoMonths, 'paoMonths', '开封后使用期限（PAO）');
     if (!pm.ok) return pm;
 
+    let finalUsedUpDate = null;
+    if (status === 'used_up') {
+      finalUsedUpDate = ud.value || (targetPrev?.status === 'used_up' ? targetPrev.usedUpDate : null) || todayStr();
+      if (od.value && finalUsedUpDate < od.value) {
+        return this.failValidation('product_item', 'usedUpDate', '用完日期不能早于开封日期');
+      }
+    }
+
     const remRaw = input.remainingPercent === '' || input.remainingPercent === null || input.remainingPercent === undefined
-      ? 100
+      ? (status === 'used_up' ? 0 : 100)
       : Number.parseInt(String(input.remainingPercent), 10);
     if (!Number.isInteger(remRaw) || remRaw < 0 || remRaw > 100) {
       return this.failValidation('product_item', 'remainingPercent', '剩余比例必须在 0 到 100 之间');
     }
 
+    const draftDates = {
+      manufactureDate: md.value,
+      unopenedShelfMonths: sm.value,
+      openedDate: od.value,
+      paoMonths: pm.value,
+      confirmedExpiryDate: cd.value,
+    };
+    const computed = deriveComputedExpiry(draftDates);
+    const confirmation = applyExpiryConfirmation(targetPrev, draftDates, now);
+    const acqInput = input.acquisitionMethod !== undefined
+      ? input.acquisitionMethod
+      : (input.acquisitionPreset !== undefined || input.acquisitionCustomText !== undefined)
+        ? { preset: input.acquisitionPreset, customText: input.acquisitionCustomText }
+        : input.purchaseChannel;
+    const acq = normalizeAcquisitionMethod(acqInput);
+
+    const record = {
+      id: targetPrev ? targetPrev.id : uid('item'),
+      productId,
+      purchasePriceMinor,
+      currencyCode,
+      purchaseDate: pd.value,
+      acquisitionMethod: acq.acquisitionMethod,
+      purchaseChannel: acq.purchaseChannel,
+      manufactureDate: md.value,
+      unopenedShelfMonths: sm.value,
+      openedDate: od.value,
+      usedUpDate: finalUsedUpDate,
+      paoMonths: pm.value,
+      unopenedComputedExpiry: computed.unopenedComputedExpiry,
+      openedComputedExpiry: computed.openedComputedExpiry,
+      computedExpiryDate: computed.computedExpiryDate,
+      expiryBasis: computed.expiryBasis,
+      confirmedExpiryDate: confirmation.confirmedExpiryDate,
+      expiryConfirmedAt: confirmation.expiryConfirmedAt,
+      expiryNeedsReconfirm: confirmation.expiryNeedsReconfirm,
+      status,
+      remainingPercent: status === 'used_up' ? 0 : remRaw,
+      lastUsedAt: targetPrev ? targetPrev.lastUsedAt : null,
+      createdAt: targetPrev ? targetPrev.createdAt : now,
+      updatedAt: now,
+      archivedAt: input.archivedAt !== undefined ? input.archivedAt : (targetPrev ? targetPrev.archivedAt : null),
+      deletedAt: input.deletedAt !== undefined ? input.deletedAt : (targetPrev ? targetPrev.deletedAt || null : null),
+    };
+    return { ok: true, record };
+  }
+
+  /**
+   * 保存或更新 ProductItem。
+   * - 金额严格按 currencyCode 精度从十进制字符串转换，绝不自动按 2 位或浮点计算。
+   * - 有效期严格遵守不猜测原则，并保护已确认的到期日不被自动覆盖。
+   */
+  saveProductItem(input) {
+    const product = this.state.products.find((p) => p.id === input.productId);
+    if (!product) return this.failValidation('product_item', 'productId', '所属产品不存在');
+
     const prev = input.id ? this.state.productItems.find((i) => i.id === input.id) : null;
-    if (input.id && !prev) return this.failValidation('product_item', 'id', '未找到要编辑的持有实例');
+    if (input.id && !prev) return this.failValidation('product_item', 'id', '未找到要编辑的产品件记录');
+
+    const now = new Date().toISOString();
+    const built = this._buildValidatedItemRecord({
+      productId: product.id,
+      targetPrev: prev,
+      input: { ...input, status: input.status || 'in_use' },
+      now,
+    });
+    if (!built.ok) return built;
 
     return this.runPersistMutation('product_item', () => {
       const targetPrev = input.id ? this.state.productItems.find((i) => i.id === input.id) : null;
-      const now = new Date().toISOString();
-      const draftDates = {
-        manufactureDate: md.value,
-        unopenedShelfMonths: sm.value,
-        openedDate: od.value,
-        paoMonths: pm.value,
-        confirmedExpiryDate: cd.value,
-      };
-      const computed = deriveComputedExpiry(draftDates);
-      const confirmation = applyExpiryConfirmation(targetPrev, draftDates, now);
-      const acqInput = input.acquisitionMethod !== undefined
-        ? input.acquisitionMethod
-        : (input.acquisitionPreset !== undefined || input.acquisitionCustomText !== undefined)
-          ? { preset: input.acquisitionPreset, customText: input.acquisitionCustomText }
-          : input.purchaseChannel;
-      const acq = normalizeAcquisitionMethod(acqInput);
-
-      const record = {
-        id: targetPrev ? targetPrev.id : uid('item'),
-        productId: product.id,
-        purchasePriceMinor,
-        currencyCode,
-        purchaseDate: pd.value,
-        acquisitionMethod: acq.acquisitionMethod,
-        purchaseChannel: acq.purchaseChannel,
-        manufactureDate: md.value,
-        unopenedShelfMonths: sm.value,
-        openedDate: od.value,
-        paoMonths: pm.value,
-        unopenedComputedExpiry: computed.unopenedComputedExpiry,
-        openedComputedExpiry: computed.openedComputedExpiry,
-        computedExpiryDate: computed.computedExpiryDate,
-        expiryBasis: computed.expiryBasis,
-        confirmedExpiryDate: confirmation.confirmedExpiryDate,
-        expiryConfirmedAt: confirmation.expiryConfirmedAt,
-        expiryNeedsReconfirm: confirmation.expiryNeedsReconfirm,
-        status,
-        remainingPercent: status === 'used_up' ? 0 : remRaw,
-        lastUsedAt: targetPrev ? targetPrev.lastUsedAt : null,
-        createdAt: targetPrev ? targetPrev.createdAt : now,
-        updatedAt: now,
-        archivedAt: input.archivedAt !== undefined ? input.archivedAt : (targetPrev ? targetPrev.archivedAt : null),
-      };
-
       if (targetPrev) {
-        Object.assign(targetPrev, record);
+        Object.assign(targetPrev, built.record);
       } else {
-        this.state.productItems.push(record);
+        this.state.productItems.push(built.record);
       }
-      return { ok: true, item: record };
+      return { ok: true, item: built.record };
+    });
+  }
+
+  /** 软删除单件产品，保留历史妆容快照与使用记录完整性 */
+  softDeleteProductItem(itemId) {
+    const item = this.state.productItems.find((i) => i.id === itemId);
+    if (!item) return this.failValidation('product_item', 'id', '未找到该件产品');
+    const now = new Date().toISOString();
+    return this.runPersistMutation('product_item', () => {
+      const target = this.state.productItems.find((i) => i.id === itemId);
+      target.deletedAt = now;
+      target.updatedAt = now;
+      return { ok: true, item: target };
     });
   }
 
@@ -1005,6 +1680,38 @@ export class PrototypeStore {
     return res;
   }
 
+  /** 启动时自动永久清理已到期（>=7天）的回收站产品 */
+  async purgeExpiredProducts(now = new Date()) {
+    const nowMs = this._toNowMs(now);
+    const retentionMs = PRODUCT_TRASH_RETENTION_DAYS * 86400000;
+    const expiredIds = this.state.products
+      .filter((p) => {
+        if (!p.deletedAt) return false;
+        const purgeMs = Number.isFinite(Date.parse(p.purgeAt || ''))
+          ? Date.parse(p.purgeAt)
+          : Date.parse(p.deletedAt) + retentionMs;
+        return nowMs >= purgeMs;
+      })
+      .map((p) => p.id);
+
+    let purgedCount = 0;
+    for (const id of expiredIds) {
+      const r = await this.permanentlyDeleteProductFromTrash(id);
+      if (r.ok) purgedCount += 1;
+    }
+    return { ok: true, purgedCount, purgedIds: expiredIds };
+  }
+
+  async purgeExpiredTrash(now = new Date()) {
+    const looksRes = await this.purgeExpiredLooks(now);
+    const prodsRes = await this.purgeExpiredProducts(now);
+    return {
+      ok: Boolean(looksRes.ok && prodsRes.ok),
+      purgedLooks: looksRes.purgedCount || 0,
+      purgedProducts: prodsRes.purgedCount || 0,
+    };
+  }
+
   addWearReview(lookId, input) {
     const look = this.state.looks.find((l) => l.id === lookId);
     if (!look) return this.failValidation('wear_review', 'lookId', '妆容不存在');
@@ -1199,14 +1906,15 @@ export class PrototypeStore {
   /* ---------------- 首页统计聚合（严格遵循 ADR-0001 第五节） ---------------- */
 
   getHomeSummary(today = todayStr()) {
-    const activeProducts = this.state.products.filter((p) => !p.archivedAt);
+    const activeProducts = this.state.products.filter((p) => !p.archivedAt && !p.deletedAt);
+    const activeProdIds = new Set(activeProducts.map((p) => p.id));
     const activeHeldItems = this.state.productItems.filter(
-      (i) => !i.archivedAt && isHeldStatus(i.status),
+      (i) => !i.archivedAt && !i.deletedAt && activeProdIds.has(i.productId) && isHeldStatus(i.status),
     );
 
-    // 累计购买金额：包含所有存在有效金额的实例（含已用完、已归档），严格按 currencyCode 分组
+    // 累计购买金额：包含所有存在有效金额的记录（含已用完/历史归档），严格按 currencyCode 分组
     const purchaseEntries = this.state.productItems
-      .filter((i) => i.purchasePriceMinor !== null && i.purchasePriceMinor !== undefined && i.purchasePriceMinor !== '')
+      .filter((i) => !i.deletedAt && i.purchasePriceMinor !== null && i.purchasePriceMinor !== undefined && i.purchasePriceMinor !== '')
       .map((i) => ({ minor: i.purchasePriceMinor, currencyCode: i.currencyCode }));
     const currencyTotals = sumByCurrency(purchaseEntries);
     const selectedCurrency = isSupportedCurrency(this.state.settings?.homeSelectedCurrency)
@@ -1222,9 +1930,14 @@ export class PrototypeStore {
     const nearDays = this.state.settings.nearExpiryDays;
     const nearExpiryItems = [];
     const expiredItems = [];
+    let pendingStatusCount = 0;
+    let incompleteExpiryCount = 0;
 
     for (const item of activeHeldItems) {
-      const resolved = resolveExpiry(item);
+      const comp = getItemExpiryCompleteness(item);
+      if (comp.isPendingStatus) pendingStatusCount += 1;
+      if (comp.isIncompleteExpiry) incompleteExpiryCount += 1;
+      const resolved = resolveItemExpiryForDisplay(item);
       const st = expiryStatus(resolved, today, nearDays);
       if (st.key === 'near') nearExpiryItems.push({ item, status: st, resolved });
       if (st.key === 'expired') expiredItems.push({ item, status: st, resolved });
@@ -1264,7 +1977,7 @@ export class PrototypeStore {
           kind: 'usage',
           date: u.usedDate,
           sortKey: u.usedAt,
-          title: prod ? prod.name : '已移除产品实例',
+          title: prod ? prod.name : '已移除产品',
           subtitle: `${u.scene}${u.feeling ? ` · ${u.feeling}` : ''}`,
           raw: u,
         };
@@ -1284,7 +1997,9 @@ export class PrototypeStore {
     return {
       productCount: activeProducts.length,
       heldItemCount: activeHeldItems.length,
-      totalItemCount: this.state.productItems.length,
+      totalItemCount: this.state.productItems.filter((i) => !i.deletedAt).length,
+      pendingStatusCount,
+      incompleteExpiryCount,
       selectedCurrency,
       selectedCurrencyTotal,
       currencyTotals,

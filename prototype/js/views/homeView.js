@@ -85,7 +85,7 @@ export function renderHomeView({ store, ctx, actions }) {
         <div class="divider"></div>
 
         ${summary.nearExpiryConfigured ? `
-          <div class="row-between">
+          <div class="row-between" style="gap:8px;">
             <div class="row-wrap">
               <span class="pill ${summary.nearExpiryItems.length > 0 ? 'pill-amber' : 'pill-sage'}">
                 ${summary.nearDays} 天内临期：${summary.nearExpiryItems.length} 件
@@ -93,13 +93,16 @@ export function renderHomeView({ store, ctx, actions }) {
               ${summary.expiredItems.length > 0
                 ? `<span class="pill pill-danger">已过期：${summary.expiredItems.length} 件</span>`
                 : ''}
+              ${summary.pendingStatusCount + summary.incompleteExpiryCount > 0
+                ? `<span class="pill">待补充 ${summary.pendingStatusCount + summary.incompleteExpiryCount} 件</span>`
+                : ''}
             </div>
-            <button type="button" class="btn btn-secondary btn-sm" data-home-go-box="${summary.nearExpiryItems.length > 0 ? 'near' : 'expired'}">
+            <button type="button" class="btn btn-secondary btn-sm" data-home-go-box="${summary.nearExpiryItems.length > 0 || summary.expiredItems.length > 0 ? 'near' : 'pending'}">
               查看详情
             </button>
           </div>
         ` : `
-          <div class="row-between">
+          <div class="row-between" style="gap:8px;">
             <div>
               <div style="font-size:13px;font-weight:600;">临期提醒阈值：未设置</div>
               <div class="muted-note">文档未默认规定临期天数，需您在设置中自行指定${summary.expiredItems.length > 0 ? `（当前已有 ${summary.expiredItems.length} 件已过期）` : ''}。</div>
@@ -107,6 +110,18 @@ export function renderHomeView({ store, ctx, actions }) {
             <button type="button" class="btn btn-soft btn-sm" data-home-set-near="1">去设置</button>
           </div>
         `}
+        ${summary.pendingStatusCount + summary.incompleteExpiryCount > 0 ? `
+          <div class="divider"></div>
+          <div class="row-between" style="gap:8px;">
+            <div class="muted-note">
+              ${[
+                summary.pendingStatusCount > 0 ? `待记录使用状态 ${summary.pendingStatusCount} 件` : '',
+                summary.incompleteExpiryCount > 0 ? `有效期信息待完善 ${summary.incompleteExpiryCount} 件` : '',
+              ].filter(Boolean).join(' · ')}
+            </div>
+            <button type="button" class="ghost-mini-btn" data-home-go-box="pending">去补充 ›</button>
+          </div>
+        ` : ''}
       </div>
 
       <!-- 资产总额（极简 1~2 行；币种切换在「我的」设置） -->
@@ -260,11 +275,11 @@ export function bindHomeEvents(container, { store, actions, sheet }) {
         <div class="stack">
           <div class="card">
             <div style="font-weight:700;margin-bottom:4px;">产品款式</div>
-            <div class="muted-note" style="line-height:1.6;">统计您收录的美妆产品档案数量（同一款口红只算 1 种款式）。</div>
+            <div class="muted-note" style="line-height:1.6;">统计您当前拥有的美妆产品款式数量（同一款口红只算 1 款）。</div>
           </div>
           <div class="card">
             <div style="font-weight:700;margin-bottom:4px;">当前持有件数</div>
-            <div class="muted-note" style="line-height:1.6;">统计您目前实际手头持有的单品总数（例如同款口红买了 2 支则计为 2 件；已用完、已弃用、已停用的不再计入当前持有）。</div>
+            <div class="muted-note" style="line-height:1.6;">统计您手头实际持有的件数总和（含未记录、未开封、使用中；已用完或已移除不再计入）。</div>
           </div>
         </div>
       `,
@@ -282,7 +297,7 @@ export function bindHomeEvents(container, { store, actions, sheet }) {
             不同币种分别独立统计，不做汇率换算，也不跨币种相加。首页默认展示币种可在「我的 → 首页资产币种」中切换。
           </div>
           ${summary.currencyTotals.length === 0
-            ? `<div class="muted-note">暂无已记录有效金额的持有实例。</div>`
+            ? `<div class="muted-note">暂无已记录有效金额的产品记录。</div>`
             : `
               <div class="currency-list">
                 ${summary.currencyTotals

@@ -22,18 +22,29 @@ import {
   deriveComputedExpiry,
   deriveDualComputedExpiry,
   expiryStatus,
+  formatUsageDuration,
   missingExpiryInputs,
   resolveExpiry,
+  resolveItemExpiryForDisplay,
 } from '../js/expiry.js';
 import {
   ACQUISITION_PRESETS,
+  ITEM_STATUSES,
   LOOK_TRASH_RETENTION_DAYS,
+  PRODUCT_TRASH_RETENTION_DAYS,
   PrototypeStore,
   SPEC_UNITS,
   STORAGE_KEY,
+  composeProductDisplayName,
+  detectItemDataConflict,
+  evaluateQuickStatusOption,
+  filterProductItems,
   formatSpecification,
   getItemAcquisitionDisplay,
+  getItemExpiryCompleteness,
   parseSpecificationParts,
+  summarizeProductCounts,
+  validateItemTransitionAndFields,
 } from '../js/store.js';
 import { validateImageFile } from '../js/assets.js';
 import { clearDiagnostics, getDiagnostics } from '../js/diagnostics.js';
@@ -496,4 +507,135 @@ test('TASK02.1-B：未开封与开封后独立推算、获得方式兼容、妆�
   assert.ok(keptSnap);
   assert.equal(keptSnap.productItemId, null);
   assert.equal(keptSnap.productNameSnapshot, '菁纯丝绒雾面唇膏');
+});
+
+test('TASK02.1-C2：未记录状态与统计口径、名称自动组合、原子批量新建、有效期独立拆分、产品 7 天回收站与去术语化', async () => {
+  const storage = createMemoryStorage();
+  const mediaOps = createFakeMediaOps();
+  const store = new PrototypeStore({ storage, mediaOps });
+
+  // 1. 名称选填自动组合 + ITEM_STATUSES.unrecorded 支持
+  assert.equal(ITEM_STATUSES.unrecorded.held, true);
+  assert.equal(
+    composeProductDisplayName({ customName: '', brandName: 'Zelens', categoryName: '底妆', subCategoryName: '粉底液', shade: '浮雕白' }),
+    'Zelens 粉底液 浮雕白',
+  );
+
+  // 2. 原子连续新建：默认跳过详情自动记为 unrecorded，且计入当前拥有但不计入使用中/未开封
+  const batchRes = store.saveProductWithItems({
+    productInput: {
+      categoryId: 'cat-base',
+      subCategoryId: 'sub-foundation',
+      brandName: 'Zelens',
+      shade: '浮雕白',
+      specificationValue: '30',
+      specificationUnit: 'ml',
+      quantityUnit: '瓶',
+    },
+    quantity: 2,
+    batchMode: 'per_item',
+    itemInputs: [
+      { status: 'in_use', openedDate: '2026-11-01', paoMonths: '', currencyCode: 'CNY', purchasePriceInput: '420.00' },
+      { status: '', currencyCode: 'CNY' }, // 完全跳过详情 -> 系统默认 unrecorded
+    ],
+  });
+  assert.equal(batchRes.ok, true);
+  assert.equal(batchRes.product.name, 'Zelens 粉底液 浮雕白');
+  assert.equal(batchRes.items.length, 2);
+  assert.equal(batchRes.items[0].status, 'in_use');
+  assert.equal(batchRes.items[1].status, 'unrecorded');
+
+  const counts = summarizeProductCounts(batchRes.product, store.state.productItems);
+  assert.equal(counts.heldCount, 2);
+  assert.equal(counts.inUseCount, 1);
+  assert.equal(counts.pendingStatusCount, 1);
+  // 第 1 瓶仅填开封日未填 PAO 与确认到期日 -> 归入「有效期信息待完善」，不归入「待记录使用状态」
+  assert.equal(counts.incompleteExpiryCount, 1);
+  assert.equal(filterProductItems(batchRes.product, store.state.productItems, 'pending_status').matchedItems[0].id, batchRes.items[1].id);
+  assert.equal(filterProductItems(batchRes.product, store.state.productItems, 'incomplete_expiry').matchedItems[0].id, batchRes.items[0].id);
+  assert.equal(filterProductItems(batchRes.product, store.state.productItems, 'pending').matchedCount, 2);
+
+  // 补充第 1 瓶确认到期日（即使仍无 PAO）-> 自动移出「有效期信息待完善」
+  const confirmItem0 = store.saveProductItem({
+    ...batchRes.items[0],
+    purchasePriceInput: '420.00',
+    confirmedExpiryDate: '2027-11-01',
+  });
+  assert.equal(confirmItem0.ok, true);
+  assert.equal(getItemExpiryCompleteness(confirmItem0.item).isIncompleteExpiry, false);
+  assert.equal(resolveItemExpiryForDisplay(confirmItem0.item).date, '2027-11-01');
+
+  // 3. 冲突校验：未记录不可携带开封日期；未开封不可保留开封日期；已用完用完日期不可早于开封日期
+  assert.equal(detectItemDataConflict({ status: 'unrecorded', openedDate: '2026-11-01' }).hasConflict, true);
+  assert.equal(validateItemTransitionAndFields({ previousItem: null, nextInput: { status: 'unrecorded', openedDate: '2026-11-01' } }).ok, false);
+  assert.equal(validateItemTransitionAndFields({ previousItem: null, nextInput: { status: 'unopened', openedDate: '2026-11-01' } }).ok, false);
+  assert.equal(validateItemTransitionAndFields({ previousItem: confirmItem0.item, nextInput: { ...confirmItem0.item, status: 'used_up', usedUpDate: '2026-10-01' } }).ok, false);
+
+  const dur = formatUsageDuration('2026-01-01', '2026-04-11');
+  assert.equal(dur.valid, true);
+  assert.equal(dur.days, 100);
+  assert.equal(evaluateQuickStatusOption(batchRes.items[1], 'unrecorded').allowed, false);
+
+  // 4. version 1 -> 2 本地缓存向后迁移（绝不丢失用户旧数据）
+  const legacySnapshot = JSON.parse(storage.getItem(STORAGE_KEY));
+  legacySnapshot.version = 1;
+  delete legacySnapshot.settings.enableForeignCurrency;
+  delete legacySnapshot.products[0].deletedAt;
+  delete legacySnapshot.productItems[0].usedUpDate;
+  storage.setItem(STORAGE_KEY, JSON.stringify(legacySnapshot));
+  const v2Store = new PrototypeStore({ storage, mediaOps });
+  assert.equal(v2Store.state.version, 2);
+  assert.equal(v2Store.state.settings.enableForeignCurrency, false);
+  assert.equal(v2Store.state.products[0].deletedAt, null);
+
+  // 5. 产品 7 天回收站：软删 -> 新建同名同色号产品 -> 按 UUID 独立恢复绝不覆盖合并 -> 到期自动永久清理保护历史快照
+  const lookSnap = v2Store.saveLook({
+    name: 'Zelens 快照保护妆容',
+    lookDate: '2026-11-26',
+    selectedItems: [{ productItemId: batchRes.items[0].id }],
+  }).look;
+
+  const t0 = new Date('2026-11-26T08:00:00Z');
+  const trashRes = v2Store.softDeleteProductToTrash(batchRes.product.id, t0);
+  assert.equal(trashRes.ok, true);
+  assert.equal(v2Store.getActiveProducts().some((p) => p.id === batchRes.product.id), false);
+  assert.equal(v2Store.getTrashProducts(t0).length, 1);
+  assert.equal(v2Store.getTrashProducts(t0)[0].remainingDays, PRODUCT_TRASH_RETENTION_DAYS);
+
+  // 创建同品牌同分类同色号的新品
+  const dupNewRes = v2Store.saveProductWithItems({
+    productInput: {
+      categoryId: 'cat-base',
+      subCategoryId: 'sub-foundation',
+      brandName: 'Zelens',
+      shade: '浮雕白',
+    },
+    quantity: 1,
+    itemInputs: [{}],
+  });
+  assert.equal(dupNewRes.ok, true);
+  assert.notEqual(dupNewRes.product.id, batchRes.product.id);
+
+  // 恢复原 Zelens，两者独立并存互不覆盖
+  const restoreProd = v2Store.restoreProductFromTrash(batchRes.product.id);
+  assert.equal(restoreProd.ok, true);
+  assert.equal(v2Store.getActiveProducts().filter((p) => p.name === 'Zelens 粉底液 浮雕白').length, 2);
+
+  // 再次移入回收站并于第 8 天启动自动清理，验证历史妆容快照完整
+  v2Store.softDeleteProductToTrash(batchRes.product.id, t0);
+  const t8 = new Date('2026-12-04T09:00:00Z');
+  const purgeRes = await v2Store.purgeExpiredTrash(t8);
+  assert.equal(purgeRes.purgedProducts, 1);
+  assert.equal(v2Store.state.products.some((p) => p.id === batchRes.product.id), false);
+  const keptLookItem = v2Store.state.lookProductItems.find((lpi) => lpi.lookId === lookSnap.id);
+  assert.ok(keptLookItem);
+  assert.equal(keptLookItem.productItemId, null);
+  assert.equal(keptLookItem.productNameSnapshot, 'Zelens 粉底液 浮雕白');
+
+  // 6. 正式视图去术语化检查（严禁向普通用户展示研发/数据库术语）
+  const uiFiles = ['js/app.js', 'js/views/boxView.js', 'js/views/homeView.js', 'js/views/meView.js', 'js/views/looksView.js', 'js/views/dailyView.js'];
+  for (const rel of uiFiles) {
+    const src = fs.readFileSync(path.join(PROTOTYPE_DIR, rel), 'utf8');
+    assert.equal(/\bProductItem\b|持有实例|产品主档|产品档案/.test(src), false, `${rel} 不得向普通用户暴露内部专业术语`);
+  }
 });

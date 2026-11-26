@@ -278,7 +278,10 @@ function openRoutineExecutionSheet({ store, sheet, toast, routineId, logDate, on
 }
 
 function openNewRoutineSheet({ store, sheet, toast, onSaved }) {
-  const heldItems = store.state.productItems.filter((i) => !i.archivedAt && isHeldStatus(i.status));
+  const activeProdIds = new Set(store.getActiveProducts().map((p) => p.id));
+  const heldItems = store.state.productItems.filter(
+    (i) => !i.archivedAt && !i.deletedAt && activeProdIds.has(i.productId) && isHeldStatus(i.status),
+  );
   sheet.open({
     title: '新建护肤流程',
     bodyHtml: `
@@ -349,16 +352,19 @@ function openNewRoutineSheet({ store, sheet, toast, onSaved }) {
 }
 
 function openNewUsageSheet({ store, sheet, toast, defaultDate, onSaved }) {
-  const heldItems = store.state.productItems.filter((i) => !i.archivedAt && isHeldStatus(i.status));
+  const activeProdIds = new Set(store.getActiveProducts().map((p) => p.id));
+  const heldItems = store.state.productItems.filter(
+    (i) => !i.archivedAt && !i.deletedAt && activeProdIds.has(i.productId) && isHeldStatus(i.status),
+  );
   sheet.open({
     title: '添加单品使用记录',
     bodyHtml: `
       <form id="usage-form" class="form-stack" novalidate>
         <div id="usage-err" class="form-banner-error" style="display:none;"></div>
         <div class="field">
-          <label>使用产品实例 <span class="req">*</span></label>
+          <label>使用产品 <span class="req">*</span></label>
           <select class="select" name="productItemId" required>
-            <option value="">请选择持有实例</option>
+            <option value="">请选择在手产品</option>
             ${heldItems
               .map((i) => {
                 const p = store.state.products.find((pr) => pr.id === i.productId);

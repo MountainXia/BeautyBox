@@ -287,3 +287,69 @@ export function applyExpiryConfirmation(prev, next, nowIso) {
     expiryNeedsReconfirm: prevConfirmed ? (!!prev.expiryNeedsReconfirm || changed) : false,
   };
 }
+
+/**
+ * 按使用状态解析当前单件在列表与详情展示的有效到期日（TASK02.1-C2）：
+ * - 用户确认到期日优先
+ * - 未开封：仅采用 生产日期 + 未开封保质期
+ * - 使用中：仅采用 开封日期 + PAO（缺少则待完善，不拿未开封保质期充当开封后到期）
+ * - 未记录：不推算到期日
+ */
+export function resolveItemExpiryForDisplay(item) {
+  if (isValidDate(item?.confirmedExpiryDate)) {
+    return { source: 'confirmed', date: item.confirmedExpiryDate, candidates: [] };
+  }
+  const dual = deriveDualComputedExpiry(item || {});
+  const st = item?.status;
+  if (st === 'unopened') {
+    return dual.unopened.date
+      ? { source: 'computed', date: dual.unopened.date, candidates: [dual.unopened] }
+      : { source: 'none', date: null, candidates: [] };
+  }
+  if (st === 'in_use') {
+    return dual.opened.date
+      ? { source: 'computed', date: dual.opened.date, candidates: [dual.opened] }
+      : { source: 'none', date: null, candidates: [] };
+  }
+  if (st === 'idle' || st === 'used_up') {
+    if (dual.opened.date) return { source: 'computed', date: dual.opened.date, candidates: [dual.opened] };
+    if (dual.unopened.date) return { source: 'computed', date: dual.unopened.date, candidates: [dual.unopened] };
+    return { source: 'none', date: null, candidates: [] };
+  }
+  return { source: 'none', date: null, candidates: [] };
+}
+
+/**
+ * 计算从开封日期到用完日期的使用时长（紧凑单行中文排版）
+ */
+export function formatUsageDuration(openedDate, usedUpDate) {
+  if (!openedDate || !usedUpDate) {
+    return { valid: false, days: null, text: '', error: '' };
+  }
+  const start = parseDate(openedDate);
+  const end = parseDate(usedUpDate);
+  if (!start || !end) {
+    return { valid: false, days: null, text: '', error: '日期格式无效' };
+  }
+  const diffDays = daysBetween(openedDate, usedUpDate);
+  if (diffDays < 0) {
+    return { valid: false, days: diffDays, text: '', error: '用完日期不能早于开封日期' };
+  }
+  if (diffDays === 0) {
+    return { valid: true, days: 0, text: '0天（开封当天用完）', error: '' };
+  }
+  if (diffDays < 30) {
+    return { valid: true, days: diffDays, text: `${diffDays}天`, error: '' };
+  }
+
+  let months = (end.y - start.y) * 12 + (end.m - start.m);
+  const anchorFor = (mOffset) => addMonths(openedDate, mOffset);
+  if (daysBetween(anchorFor(months), usedUpDate) < 0) {
+    months -= 1;
+  }
+  const remDays = daysBetween(anchorFor(months), usedUpDate);
+  const spanLabel = months > 0
+    ? (remDays > 0 ? `${months}个月${remDays}天（共${diffDays}天）` : `${months}个月（共${diffDays}天）`)
+    : `${diffDays}天`;
+  return { valid: true, days: diffDays, text: spanLabel, error: '' };
+}

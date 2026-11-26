@@ -1138,3 +1138,99 @@ html.has-modal-open .toast-root {
   border-top: 1px solid var(--border-subtle);
   padding-top: 12px;
 }
+
+/* TASK02.1-C2：防窄屏标签换行、Safari 弹窗防卡死与快捷状态三态样式 */
+html.has-modal-open .app-main {
+  touch-action: pan-y;
+}
+.sheet-backdrop,
+.dialog-backdrop,
+.app-main,
+.sheet-body,
+.dialog-panel,
+button,
+a,
+input,
+select,
+textarea {
+  touch-action: manipulation;
+}
+button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.pill,
+.chip,
+.ghost-mini-btn,
+.btn-sm,
+.seg-btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.segmented {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.segmented::-webkit-scrollbar {
+  display: none;
+}
+.segmented .seg-btn {
+  padding: 0 10px;
+}
+
+.c1-subseg {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.c1-subseg::-webkit-scrollbar {
+  display: none;
+}
+.c1-subseg .seg-btn {
+  flex: 1 0 auto;
+  padding: 0 10px;
+  font-size: 12px;
+  min-height: 34px;
+}
+
+.section-header {
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+}
+.section-title {
+  white-space: nowrap;
+}
+.section-hint {
+  white-space: normal;
+}
+
+.c1-status-bar {
+  gap: 4px;
+  padding: 4px;
+}
+.c1-status-bar .seg-btn {
+  color: var(--text-primary);
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid transparent;
+}
+.c1-status-bar .seg-btn.is-active {
+  background: var(--bg-card);
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 700;
+  box-shadow: 0 1px 4px rgba(157, 104, 101, 0.18);
+}
+.c1-status-bar .seg-btn.is-unavailable {
+  opacity: 0.35;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-weight: 400;
+  border: 1px dashed rgba(35, 31, 29, 0.16);
+  box-shadow: none;
+}

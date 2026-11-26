@@ -129,7 +129,7 @@ function renderLookTrashView({ store, ctx }) {
   return `
     <div class="stack">
       <div class="form-banner-info">
-        删除的妆容默认保留 7 天，7 天内可随时恢复；到期后会在应用启动时自动永久删除。删除妆容不会连带删除产品主档、持有实例或其他历史记录，关联照片仅在无其他引用时清理。
+        删除的妆容默认保留 7 天，7 天内可随时恢复；到期后会在应用启动时自动永久删除。删除妆容不会连带删除美妆产品或其他历史记录，关联照片仅在无其他引用时清理。
       </div>
 
       ${trashRows.length === 0
@@ -243,17 +243,17 @@ function renderLookDetail({ store, look, ctx }) {
       <div class="card">
         <div class="section-header">
           <h2 class="section-title">使用产品快照（${usedItems.length} 件）</h2>
-          <span class="section-hint">产品修改/归档后快照不失真</span>
+          <span class="section-hint">产品修改/移除后快照不失真</span>
         </div>
         ${usedItems.length === 0
-          ? `<div class="muted-note">本篇妆容未关联具体产品实例。</div>`
+          ? `<div class="muted-note">本篇妆容未关联具体产品。</div>`
           : `
             <div class="stack-sm">
               ${usedItems
                 .map((lpi) => {
                   const liveItem = lpi.productItemId ? store.state.productItems.find((i) => i.id === lpi.productItemId) : null;
                   const liveProd = liveItem ? store.state.products.find((p) => p.id === liveItem.productId) : null;
-                  const archivedOrGone = !liveItem || !liveProd || liveItem.archivedAt || liveProd.archivedAt;
+                  const archivedOrGone = !liveItem || !liveProd || liveItem.archivedAt || liveItem.deletedAt || liveProd.archivedAt || liveProd.deletedAt;
                   const renamed = liveProd && liveProd.name !== lpi.productNameSnapshot;
                   return `
                     <div class="card-muted" style="padding:10px 12px;">
@@ -267,7 +267,7 @@ function renderLookDetail({ store, look, ctx }) {
                         ${esc([lpi.brandNameSnapshot, lpi.shadeSnapshot, lpi.categorySnapshot].filter(Boolean).join(' · '))}
                       </div>
                       ${archivedOrGone || renamed
-                        ? `<div style="font-size:11px;color:var(--amber);margin-top:4px;">已通过历史快照保留当时信息${renamed ? `（主档现已改名为“${esc(liveProd.name)}”）` : '（原产品/实例已归档或已用完）'}</div>`
+                        ? `<div style="font-size:11px;color:var(--amber);margin-top:4px;">已通过历史快照保留当时信息${renamed ? `（现已改名为“${esc(liveProd.name)}”）` : '（原产品已用完或已移除）'}</div>`
                         : ''}
                     </div>
                   `;
@@ -323,7 +323,7 @@ function renderLookDetail({ store, look, ctx }) {
         <div class="row-between" style="gap:10px;">
           <div style="flex:1;">
             <div style="font-weight:700;font-size:14px;">删除这篇妆容</div>
-            <div class="muted-note">删除后将移入回收站保留 7 天，不会影响关联的产品与持有实例。</div>
+            <div class="muted-note">删除后将移入回收站保留 7 天，不会影响关联的美妆产品。</div>
           </div>
           <button type="button" class="btn btn-danger btn-sm" data-looks-soft-delete="${esc(look.id)}">移入回收站</button>
         </div>
@@ -345,7 +345,10 @@ export function openLookFormSheet({ store, sheet, dialog, toast, lookId = null, 
     ? store.state.mediaAssets.find((a) => a.id === existing.coverAssetId) || null
     : null;
 
-  const heldItems = store.state.productItems.filter((i) => !i.archivedAt && isHeldStatus(i.status));
+  const activeProdIds = new Set(store.getActiveProducts().map((p) => p.id));
+  const heldItems = store.state.productItems.filter(
+    (i) => !i.archivedAt && !i.deletedAt && activeProdIds.has(i.productId) && isHeldStatus(i.status),
+  );
   let pendingFile = null;
   let pendingPreviewUrl = '';
   let selectedSampleKey = existingCoverAsset
@@ -1154,7 +1157,7 @@ export function bindLooksEvents(container, { store, viewState, actions, sheet, d
     if (!look) return;
     const ok = await dialog.confirm({
       title: '移入回收站',
-      message: `确定要删除妆容「${look.name}」吗？删除后将移入回收站保留 7 天，7 天内可恢复，不会删除关联产品或持有实例。`,
+      message: `确定要删除妆容「${look.name}」吗？删除后将移入回收站保留 7 天，7 天内可恢复，不会删除关联产品。`,
       confirmLabel: '移入回收站',
       danger: true,
     });
@@ -1193,7 +1196,7 @@ export function bindLooksEvents(container, { store, viewState, actions, sheet, d
       if (!firstOk) return;
       const secondOk = await dialog.confirm({
         title: '不可撤销操作（第 2 次确认）',
-        message: `二次确认：即将永久清除「${look.name}」及关联持妆节点。关联产品与持有实例仍会保留；图片仅在无其他记录引用时才会清理。确认永久删除？`,
+        message: `二次确认：即将永久清除「${look.name}」及关联持妆节点。关联产品仍会保留；图片仅在无其他记录引用时才会清理。确认永久删除？`,
         confirmLabel: '确认永久删除',
         danger: true,
       });
