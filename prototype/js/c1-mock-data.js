@@ -428,25 +428,13 @@ export function evaluateC1QuickStatusOption(item, targetStatus) {
     return { allowed: true, isCurrent: true, requiresConfirm: false, reason: '' };
   }
 
-  if (targetStatus === 'unrecorded') {
-    if (cur !== 'unrecorded' || hasC1LifecycleRecord(item)) {
-      return {
-        allowed: false,
-        isCurrent: false,
-        requiresConfirm: false,
-        reason: '已有生命周期记录，不能恢复为未记录。',
-      };
-    }
-    return { allowed: true, isCurrent: false, requiresConfirm: false, reason: '' };
-  }
-
   if (targetStatus === 'unopened') {
     if (cur === 'used_up') {
       return {
         allowed: false,
         isCurrent: false,
         requiresConfirm: false,
-        reason: '当前产品状态不支持此操作，已用完请先恢复为使用中。',
+        reason: '已用完产品不能直接改为未开封，请先恢复为使用中。',
       };
     }
     if (cur === 'in_use') {
@@ -490,10 +478,12 @@ export function evaluateC1QuickStatusOption(item, targetStatus) {
 }
 
 /**
- * 统一的保存前状态与日期一致性校验（编辑详情与快速修改共用）
+ * 统一的保存前状态与日期一致性校验（编辑详情与快速修改共用）：
+ * - 「未记录」仅作为首次未填任何信息时由系统自动赋予的状态，绝不要求用户手动选择
+ * - 若首次/未记录单瓶填写了日期或价格但未手动选状态，系统按录入内容自动判定为「未开封」或「使用中」，绝不错误拦截
  */
 export function validateC1ItemTransitionAndFields({ previousItem = null, nextInput }) {
-  const targetStatus = nextInput?.status || 'unrecorded';
+  let targetStatus = String(nextInput?.status || '').trim();
   const openedDate = String(nextInput?.openedDate || '').trim() || null;
   const manufactureDate = String(nextInput?.manufactureDate || '').trim() || null;
   const unopenedShelfMonths = nextInput?.unopenedShelfMonths
@@ -502,25 +492,41 @@ export function validateC1ItemTransitionAndFields({ previousItem = null, nextInp
   const paoMonths = nextInput?.paoMonths ? Number.parseInt(String(nextInput.paoMonths), 10) : null;
   const confirmedExpiryDate = String(nextInput?.confirmedExpiryDate || '').trim() || null;
 
-  if (!C1_ITEM_STATUSES[targetStatus]) {
-    return { ok: false, error: '请选择有效的使用状态。' };
+  const remainingRaw =
+    nextInput?.remainingPercent === '' || nextInput?.remainingPercent === null || nextInput?.remainingPercent === undefined
+      ? (targetStatus === 'used_up' ? 0 : 100)
+      : Number.parseInt(String(nextInput.remainingPercent), 10);
+  if (!Number.isInteger(remainingRaw) || remainingRaw < 0 || remainingRaw > 100) {
+    return { ok: false, error: '剩余比例必须在 0 到 100 之间。' };
   }
 
-  if (targetStatus === 'unrecorded') {
-    const prevHadLifecycle =
-      Boolean(previousItem && previousItem.status && previousItem.status !== 'unrecorded') ||
-      hasC1LifecycleRecord(previousItem);
-    const nextHasLifecycle = hasC1LifecycleRecord({
-      ...nextInput,
-      manufactureDate,
-      unopenedShelfMonths,
-      openedDate,
-      paoMonths,
-      confirmedExpiryDate,
-    });
-    if (prevHadLifecycle || nextHasLifecycle) {
-      return { ok: false, error: '已有生命周期记录，不能恢复为未记录。' };
+  const nextHasLifecycle = hasC1LifecycleRecord({
+    ...nextInput,
+    manufactureDate,
+    unopenedShelfMonths,
+    openedDate,
+    paoMonths,
+    confirmedExpiryDate,
+    remainingPercent: remainingRaw,
+  });
+
+  if (!targetStatus || targetStatus === 'unrecorded') {
+    if (previousItem && previousItem.status && previousItem.status !== 'unrecorded') {
+      return { ok: false, error: '已有记录的产品不能改为未记录，请选择未开封、使用中或已用完。' };
     }
+    if (!nextHasLifecycle) {
+      targetStatus = 'unrecorded';
+    } else if (openedDate) {
+      targetStatus = 'in_use';
+    } else if (remainingRaw === 0) {
+      targetStatus = 'used_up';
+    } else {
+      targetStatus = 'unopened';
+    }
+  }
+
+  if (!C1_ITEM_STATUSES[targetStatus]) {
+    return { ok: false, error: '请选择有效的使用状态。' };
   }
 
   if (targetStatus === 'unopened') {
@@ -538,13 +544,6 @@ export function validateC1ItemTransitionAndFields({ previousItem = null, nextInp
     }
   }
 
-  const remainingRaw =
-    nextInput?.remainingPercent === '' || nextInput?.remainingPercent === null || nextInput?.remainingPercent === undefined
-      ? (targetStatus === 'used_up' ? 0 : 100)
-      : Number.parseInt(String(nextInput.remainingPercent), 10);
-  if (!Number.isInteger(remainingRaw) || remainingRaw < 0 || remainingRaw > 100) {
-    return { ok: false, error: '剩余比例必须在 0 到 100 之间。' };
-  }
   if (previousItem?.status === 'used_up' && targetStatus === 'in_use' && remainingRaw <= 0) {
     return { ok: false, error: '恢复使用中时，剩余比例必须大于 0%。' };
   }
@@ -565,7 +564,6 @@ export function validateC1ItemTransitionAndFields({ previousItem = null, nextInp
 
 export function getAllowedC1Statuses(item) {
   return {
-    unrecorded: evaluateC1QuickStatusOption(item, 'unrecorded').allowed,
     unopened: evaluateC1QuickStatusOption(item, 'unopened').allowed,
     in_use: evaluateC1QuickStatusOption(item, 'in_use').allowed,
     used_up: evaluateC1QuickStatusOption(item, 'used_up').allowed,

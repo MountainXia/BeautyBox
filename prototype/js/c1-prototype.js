@@ -381,11 +381,15 @@ function renderDetailView() {
     }
 
     const statusOptions = [
-      { key: 'unrecorded', label: '未记录' },
       { key: 'unopened', label: '未开封' },
       { key: 'in_use', label: '使用中' },
       { key: 'used_up', label: '已用完' },
     ];
+    const statusBarItems = statusOptions.map((opt) => ({
+      opt,
+      ev: evaluateC1QuickStatusOption(item, opt.key),
+    }));
+    const hasUnavailableOption = statusBarItems.some((x) => !x.ev.isCurrent && !x.ev.allowed);
 
     return `
       <div class="card" style="padding:12px 14px;">
@@ -419,12 +423,11 @@ function renderDetailView() {
           <div class="stack-sm" style="margin-top:10px;">
             <div class="row-between">
               <span style="font-size:12px;color:var(--text-tertiary);">快速改状态</span>
-              <span style="font-size:11px;color:var(--text-tertiary);">浅色虚线项不可选，点击可看原因</span>
+              ${hasUnavailableOption ? '<span style="font-size:11px;color:var(--text-tertiary);">浅色虚线项不可选，点击可看原因</span>' : ''}
             </div>
             <div class="segmented c1-status-bar">
-              ${statusOptions
-                .map((opt) => {
-                  const ev = evaluateC1QuickStatusOption(item, opt.key);
+              ${statusBarItems
+                .map(({ opt, ev }) => {
                   const cls = ev.isCurrent ? 'is-active' : ev.allowed ? '' : 'is-unavailable';
                   return `<button type="button" class="seg-btn ${cls}" data-c1-status-action="${esc(item.id)}:${opt.key}" aria-pressed="${ev.isCurrent}" aria-disabled="${!ev.allowed}">${opt.label}</button>`;
                 })
@@ -933,7 +936,7 @@ function renderTrashView() {
 
 function createBlankItemDraft() {
   return {
-    status: 'unrecorded',
+    status: '',
     manufactureDate: '',
     unopenedShelfMonths: '',
     openedDate: '',
@@ -947,8 +950,9 @@ function createBlankItemDraft() {
   };
 }
 
-function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = false, allowUnrecorded = true } = {}) {
-  const isOpenedLocked = draft.status === 'unopened' || draft.status === 'unrecorded';
+function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = false } = {}) {
+  const isOpenedLocked = !draft.status || draft.status === 'unopened' || draft.status === 'unrecorded';
+  const showPlaceholder = !draft.status || draft.status === 'unrecorded';
   return `
     <div class="card-muted" data-draft-idx="${idx}" style="margin-top:8px;">
       ${showTitle ? `<div style="font-weight:700;font-size:13px;margin-bottom:8px;">第 ${idx + 1} 件详细信息（均选填）</div>` : ''}
@@ -957,7 +961,7 @@ function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = fa
         <div class="field">
           <label>使用状态</label>
           <select class="select" data-df="status">
-            ${allowUnrecorded ? `<option value="unrecorded" ${draft.status === 'unrecorded' ? 'selected' : ''}>未记录（默认）</option>` : ''}
+            ${showPlaceholder ? `<option value="" selected>请选择使用状态（选填）</option>` : ''}
             <option value="unopened" ${draft.status === 'unopened' ? 'selected' : ''}>未开封</option>
             <option value="in_use" ${draft.status === 'in_use' ? 'selected' : ''}>使用中</option>
             <option value="used_up" ${draft.status === 'used_up' ? 'selected' : ''}>已用完</option>
@@ -1049,7 +1053,7 @@ function bindDraftExpiryHelpers(box, draft) {
 
   const syncOpenedLock = () => {
     const curStatus = statusSel ? statusSel.value : draft.status;
-    const locked = curStatus === 'unopened' || curStatus === 'unrecorded';
+    const locked = !curStatus || curStatus === 'unopened' || curStatus === 'unrecorded';
     if (openInput) {
       openInput.readOnly = locked;
       openInput.style.background = locked ? 'var(--bg-subtle)' : '';
@@ -1063,7 +1067,7 @@ function bindDraftExpiryHelpers(box, draft) {
   };
 
   openLockHit?.addEventListener('click', () => {
-    toast('当前为未开封/未记录状态，请先将使用状态改为「使用中」或「已用完」再填写开封日期');
+    toast('请先将使用状态改为「使用中」或「已用完」，再填写开封日期');
   });
 
   toggleHelpBtn?.addEventListener('click', () => {
@@ -1593,7 +1597,7 @@ function openEditSingleItemSheet(prod, item) {
       ? minorToDecimalString(item.purchasePriceMinor, item.currencyCode)
       : '';
   const draft = {
-    status: item.status || 'unrecorded',
+    status: item.status === 'unrecorded' ? '' : (item.status || ''),
     manufactureDate: item.manufactureDate || '',
     unopenedShelfMonths: item.unopenedShelfMonths ?? '',
     openedDate: item.openedDate || '',
@@ -1605,14 +1609,12 @@ function openEditSingleItemSheet(prod, item) {
     acquisitionPreset: item.acquisitionMethod || '',
   };
 
-  const allowUnrecorded = item.status === 'unrecorded' && !hasC1LifecycleRecord(item);
-
   sheet.open({
     title: `编辑详情 · ${getDisplayName(prod)}`,
     bodyHtml: `
       <form id="c1-single-item-form" class="form-stack" novalidate>
         <div id="c1-si-err" class="form-banner-error" style="display:none;"></div>
-        ${renderItemDraftBlock(0, draft, { showTitle: false, showCurrency: state.settings.enableForeignCurrency, allowUnrecorded })}
+        ${renderItemDraftBlock(0, draft, { showTitle: false, showCurrency: state.settings.enableForeignCurrency })}
         <button type="submit" class="btn btn-primary btn-block">保存这 1 件信息</button>
       </form>
     `,
