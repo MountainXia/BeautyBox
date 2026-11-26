@@ -47,6 +47,8 @@ const ui = {
   search: '',
   primaryCatId: 'all',
   statusFilter: 'all', // 'all' | 'in_use' | 'unopened' | 'unrecorded' | 'near' | 'used_up'
+  catScrollLeft: 0,
+  statusScrollLeft: 0,
   expandedItemIds: new Set(),
   showUsedUpHistory: false,
 };
@@ -206,14 +208,14 @@ function renderListView() {
         <input id="c1-search" type="search" placeholder="搜索产品名称、品牌、分类或色号" value="${esc(ui.search)}" />
       </div>
 
-      <div class="chips-scroll">
+      <div class="chips-scroll" id="c1-cat-scroll">
         <button type="button" class="chip ${ui.primaryCatId === 'all' ? 'is-active' : ''}" data-c1-cat="all">全部分类</button>
         ${C1_CATEGORY_TREE.map(
           (c) => `<button type="button" class="chip ${ui.primaryCatId === c.id ? 'is-active' : ''}" data-c1-cat="${esc(c.id)}">${esc(c.name)}</button>`,
         ).join('')}
       </div>
 
-      <div class="chips-scroll">
+      <div class="chips-scroll" id="c1-status-scroll">
         ${filterChips
           .map(
             (f) => `<button type="button" class="chip ${ui.statusFilter === f.id ? 'is-active' : ''}" data-c1-status="${esc(f.id)}">${esc(f.label)}</button>`,
@@ -236,9 +238,9 @@ function renderListView() {
                 const { primaryName, subName } = findCategoryNames(prod.primaryCategoryId, prod.subCategoryId);
                 const unit = prod.quantityUnit || '件';
                 const statusBits = [];
-                if (sum.inUseCount > 0) statusBits.push(`${sum.inUseCount} ${unit}使用中`);
-                if (sum.unopenedCount > 0) statusBits.push(`${sum.unopenedCount} ${unit}未开封`);
-                if (sum.unrecordedCount > 0) statusBits.push(`${sum.unrecordedCount} ${unit}待补充信息`);
+                if (sum.inUseCount > 0) statusBits.push(`使用中 ${sum.inUseCount}`);
+                if (sum.unopenedCount > 0) statusBits.push(`未开封 ${sum.unopenedCount}`);
+                if (sum.unrecordedCount > 0) statusBits.push(`待补充信息 ${sum.unrecordedCount}`);
 
                 return `
                   <button type="button" class="product-list-row" data-c1-open="${esc(prod.id)}">
@@ -251,13 +253,17 @@ function renderListView() {
                       <div class="muted-note" style="margin-top:2px;">
                         ${esc([primaryName, subName, formatSpecDisplay({ value: prod.specValue, unit: prod.specUnit, customUnit: prod.specCustomUnit })].filter(Boolean).join(' · '))}
                       </div>
-                      <div class="row-wrap" style="margin-top:6px;">
+                      <div class="muted-note" style="margin-top:5px;">
                         ${statusBits.length > 0
-                          ? `<span class="pill">${esc(statusBits.join(' · '))}</span>`
-                          : `<span class="pill">已全部用完（历史 ${sum.usedUpCount} ${esc(unit)}）</span>`}
-                        ${sum.expiredCount > 0 ? `<span class="pill pill-danger">${sum.expiredCount} ${esc(unit)}已过期</span>` : ''}
-                        ${sum.nearExpiryCount > 0 ? `<span class="pill pill-amber">${sum.nearExpiryCount} ${esc(unit)}即将到期</span>` : ''}
+                          ? esc(statusBits.join(' · '))
+                          : `已全部用完（历史 ${sum.usedUpCount} ${esc(unit)}）`}
                       </div>
+                      ${(sum.expiredCount > 0 || sum.nearExpiryCount > 0) ? `
+                        <div class="row-wrap" style="margin-top:5px;">
+                          ${sum.expiredCount > 0 ? `<span class="pill pill-danger">⚠ 其中 ${sum.expiredCount} ${esc(unit)}已过期</span>` : ''}
+                          ${sum.nearExpiryCount > 0 ? `<span class="pill pill-amber">⚠ 其中 ${sum.nearExpiryCount} ${esc(unit)}即将到期</span>` : ''}
+                        </div>
+                      ` : ''}
                     </div>
                   </button>
                 `;
@@ -296,14 +302,33 @@ function bindListEvents() {
     ui.search = e.target.value;
     render({ preserveFocusId: 'c1-search' });
   });
+  const catScroll = mainEl.querySelector('#c1-cat-scroll');
+  const statusScroll = mainEl.querySelector('#c1-status-scroll');
+  if (catScroll) {
+    catScroll.scrollLeft = ui.catScrollLeft || 0;
+    catScroll.addEventListener('scroll', () => {
+      ui.catScrollLeft = catScroll.scrollLeft;
+    }, { passive: true });
+  }
+  if (statusScroll) {
+    statusScroll.scrollLeft = ui.statusScrollLeft || 0;
+    statusScroll.addEventListener('scroll', () => {
+      ui.statusScrollLeft = statusScroll.scrollLeft;
+    }, { passive: true });
+  }
+
   mainEl.querySelectorAll('[data-c1-cat]').forEach((el) => {
     el.addEventListener('click', () => {
+      if (catScroll) ui.catScrollLeft = catScroll.scrollLeft;
+      if (statusScroll) ui.statusScrollLeft = statusScroll.scrollLeft;
       ui.primaryCatId = el.dataset.c1Cat;
       render();
     });
   });
   mainEl.querySelectorAll('[data-c1-status]').forEach((el) => {
     el.addEventListener('click', () => {
+      if (catScroll) ui.catScrollLeft = catScroll.scrollLeft;
+      if (statusScroll) ui.statusScrollLeft = statusScroll.scrollLeft;
       ui.statusFilter = el.dataset.c1Status;
       render();
     });
@@ -635,20 +660,20 @@ function bindDetailEvents(prod, sum, unit) {
       }
 
       if (evalRes.requiresConfirm === 'restore_unopened') {
+        const hasConf = Boolean(it.confirmedExpiryDate);
         const ok = await dialog.confirm({
           title: '确认恢复为未开封？',
-          message: '切换后将清空原开封日期，并重新按照生产日期和未开封保质期计算到期日。',
+          message: hasConf
+            ? `切换后将清空原开封日期与原确认到期日（${it.confirmedExpiryDate}），并重新按照生产日期和未开封保质期计算到期日。`
+            : '切换后将清空原开封日期，并重新按照生产日期和未开封保质期计算到期日。',
           confirmLabel: '确认恢复未开封',
           cancelLabel: '取消',
         });
         if (!ok) return;
         it.status = 'unopened';
         it.openedDate = null;
-        if (it.confirmedExpiryDate) {
-          toast('已恢复为未开封并清空开封日期；已保留您的确认到期日，请核实是否正确');
-        } else {
-          toast('已恢复为未开封，已清空原开封日期');
-        }
+        it.confirmedExpiryDate = null;
+        toast('已恢复为未开封，已清空原开封日期并按生产日期与未开封保质期重新计算');
         render();
         return;
       }
@@ -922,7 +947,8 @@ function createBlankItemDraft() {
   };
 }
 
-function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = false } = {}) {
+function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = false, allowUnrecorded = true } = {}) {
+  const isOpenedLocked = draft.status === 'unopened' || draft.status === 'unrecorded';
   return `
     <div class="card-muted" data-draft-idx="${idx}" style="margin-top:8px;">
       ${showTitle ? `<div style="font-weight:700;font-size:13px;margin-bottom:8px;">第 ${idx + 1} 件详细信息（均选填）</div>` : ''}
@@ -931,7 +957,7 @@ function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = fa
         <div class="field">
           <label>使用状态</label>
           <select class="select" data-df="status">
-            <option value="unrecorded" ${draft.status === 'unrecorded' ? 'selected' : ''}>未记录（默认）</option>
+            ${allowUnrecorded ? `<option value="unrecorded" ${draft.status === 'unrecorded' ? 'selected' : ''}>未记录（默认）</option>` : ''}
             <option value="unopened" ${draft.status === 'unopened' ? 'selected' : ''}>未开封</option>
             <option value="in_use" ${draft.status === 'in_use' ? 'selected' : ''}>使用中</option>
             <option value="used_up" ${draft.status === 'used_up' ? 'selected' : ''}>已用完</option>
@@ -957,7 +983,10 @@ function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = fa
       <div class="field-row field-row-mobile-stack" style="margin-top:8px;">
         <div class="field">
           <label>开封日期</label>
-          <input class="input" type="date" data-df="openedDate" value="${esc(draft.openedDate)}" />
+          <div data-opened-wrap style="position:relative;">
+            <input class="input" type="date" data-df="openedDate" value="${esc(draft.openedDate)}" ${isOpenedLocked ? 'readonly style="background:var(--bg-subtle);color:var(--text-tertiary);pointer-events:none;"' : ''} />
+            <div data-opened-lock-hit style="display:${isOpenedLocked ? 'block' : 'none'};position:absolute;inset:0;cursor:not-allowed;" title="请先切换使用状态后再填写开封日期"></div>
+          </div>
         </div>
         <div class="field">
           <label>开封后期限 PAO（月）</label>
@@ -1011,10 +1040,31 @@ function bindDraftExpiryHelpers(box, draft) {
   const btnUnopened = box.querySelector('[data-adopt-unopened]');
   const btnOpened = box.querySelector('[data-adopt-opened]');
   const confInput = box.querySelector('[data-df="confirmedExpiryDate"]');
+  const statusSel = box.querySelector('[data-df="status"]');
   const mfgInput = box.querySelector('[data-df="manufactureDate"]');
   const shelfInput = box.querySelector('[data-df="unopenedShelfMonths"]');
   const openInput = box.querySelector('[data-df="openedDate"]');
+  const openLockHit = box.querySelector('[data-opened-lock-hit]');
   const paoInput = box.querySelector('[data-df="paoMonths"]');
+
+  const syncOpenedLock = () => {
+    const curStatus = statusSel ? statusSel.value : draft.status;
+    const locked = curStatus === 'unopened' || curStatus === 'unrecorded';
+    if (openInput) {
+      openInput.readOnly = locked;
+      openInput.style.background = locked ? 'var(--bg-subtle)' : '';
+      openInput.style.color = locked ? 'var(--text-tertiary)' : '';
+      openInput.style.pointerEvents = locked ? 'none' : '';
+    }
+    if (openLockHit) {
+      openLockHit.style.display = locked ? 'block' : 'none';
+    }
+    return locked;
+  };
+
+  openLockHit?.addEventListener('click', () => {
+    toast('当前为未开封/未记录状态，请先将使用状态改为「使用中」或「已用完」再填写开封日期');
+  });
 
   toggleHelpBtn?.addEventListener('click', () => {
     if (!previewEl) return;
@@ -1024,14 +1074,16 @@ function bindDraftExpiryHelpers(box, draft) {
   const readVal = (el, fallback) => (el ? String(el.value || '').trim() : String(fallback || '').trim());
 
   const refresh = () => {
+    const locked = syncOpenedLock();
+    const curStatus = statusSel ? statusSel.value : draft.status;
     const mfg = readVal(mfgInput, draft.manufactureDate);
     const shelfRaw = readVal(shelfInput, draft.unopenedShelfMonths);
-    const opened = readVal(openInput, draft.openedDate);
+    const opened = locked ? '' : readVal(openInput, draft.openedDate);
     const paoRaw = readVal(paoInput, draft.paoMonths);
 
     draft.manufactureDate = mfg;
     draft.unopenedShelfMonths = shelfRaw;
-    draft.openedDate = opened;
+    if (!locked) draft.openedDate = opened;
     draft.paoMonths = paoRaw;
 
     const dual = describeC1ItemDualExpiry({
@@ -1047,7 +1099,7 @@ function bindDraftExpiryHelpers(box, draft) {
           : `未开封推算：${dual.unopened.missingHint || '未填写生产日期与未开封保质期'}`,
         dual.opened.date
           ? `开封后推算：${dual.opened.date}（${dual.opened.formula}）`
-          : `开封后推算：${dual.opened.missingHint || '未填写开封日期与 PAO'}`,
+          : `开封后推算：${locked ? '未开封/未记录状态下不启用开封后推算' : (dual.opened.missingHint || '未填写开封日期与 PAO')}`,
       ];
       previewEl.innerHTML = lines.map((l) => `<div>${esc(l)}</div>`).join('');
     }
@@ -1057,9 +1109,10 @@ function bindDraftExpiryHelpers(box, draft) {
       btnUnopened.textContent = dual.unopened.date ? `采纳未开封 (${dual.unopened.date})` : '采纳未开封推算';
     }
     if (btnOpened) {
-      btnOpened.disabled = !dual.opened.date;
-      btnOpened.style.display = dual.opened.date ? '' : 'none';
-      btnOpened.textContent = dual.opened.date ? `采纳开封后 (${dual.opened.date})` : '采纳开封后推算';
+      const showOpenedAdopt = Boolean(dual.opened.date) && (curStatus === 'in_use' || curStatus === 'used_up');
+      btnOpened.disabled = !showOpenedAdopt;
+      btnOpened.style.display = showOpenedAdopt ? '' : 'none';
+      btnOpened.textContent = showOpenedAdopt ? `采纳开封后 (${dual.opened.date})` : '采纳开封后推算';
     }
     return dual;
   };
@@ -1068,6 +1121,7 @@ function bindDraftExpiryHelpers(box, draft) {
     el?.addEventListener('input', refresh);
     el?.addEventListener('change', refresh);
   });
+  statusSel?.addEventListener('change', refresh);
 
   btnUnopened?.addEventListener('click', () => {
     const dual = refresh();
@@ -1303,10 +1357,32 @@ function openAddOrEditProductSheet(existing = null) {
         detailsBodyEl.querySelectorAll('[data-draft-idx]').forEach((box) => {
           const idx = Number.parseInt(box.dataset.draftIdx, 10);
           bindDraftExpiryHelpers(box, itemDrafts[idx]);
+          const statusSel = box.querySelector('[data-df="status"]');
+          const openedInp = box.querySelector('[data-df="openedDate"]');
+          const remInp = box.querySelector('[data-df="remainingPercent"]');
           box.querySelectorAll('[data-df]').forEach((inp) => {
             const eventName = inp.tagName === 'SELECT' ? 'change' : 'input';
             inp.addEventListener(eventName, () => {
               itemDrafts[idx][inp.dataset.df] = inp.value;
+              if (inp === statusSel) {
+                if (inp.value === 'in_use' && !itemDrafts[idx].openedDate) {
+                  const t = todayStr();
+                  itemDrafts[idx].openedDate = t;
+                  if (openedInp) {
+                    openedInp.value = t;
+                    openedInp.dispatchEvent(new Event('input'));
+                  }
+                } else if (inp.value === 'unopened' || inp.value === 'unrecorded') {
+                  itemDrafts[idx].openedDate = '';
+                  if (openedInp) {
+                    openedInp.value = '';
+                    openedInp.dispatchEvent(new Event('input'));
+                  }
+                } else if (inp.value === 'used_up') {
+                  itemDrafts[idx].remainingPercent = 0;
+                  if (remInp) remInp.value = '0';
+                }
+              }
             });
           });
         });
@@ -1529,12 +1605,14 @@ function openEditSingleItemSheet(prod, item) {
     acquisitionPreset: item.acquisitionMethod || '',
   };
 
+  const allowUnrecorded = item.status === 'unrecorded' && !hasC1LifecycleRecord(item);
+
   sheet.open({
     title: `编辑详情 · ${getDisplayName(prod)}`,
     bodyHtml: `
       <form id="c1-single-item-form" class="form-stack" novalidate>
         <div id="c1-si-err" class="form-banner-error" style="display:none;"></div>
-        ${renderItemDraftBlock(0, draft, { showTitle: false, showCurrency: state.settings.enableForeignCurrency })}
+        ${renderItemDraftBlock(0, draft, { showTitle: false, showCurrency: state.settings.enableForeignCurrency, allowUnrecorded })}
         <button type="submit" class="btn btn-primary btn-block">保存这 1 件信息</button>
       </form>
     `,
@@ -1546,24 +1624,45 @@ function openEditSingleItemSheet(prod, item) {
       const statusSel = box?.querySelector('[data-df="status"]');
       const openedInp = box?.querySelector('[data-df="openedDate"]');
       const remInp = box?.querySelector('[data-df="remainingPercent"]');
+      const confInp = box?.querySelector('[data-df="confirmedExpiryDate"]');
 
       body.querySelectorAll('[data-df]').forEach((inp) => {
         const ev = inp.tagName === 'SELECT' ? 'change' : 'input';
-        inp.addEventListener(ev, () => {
-          draft[inp.dataset.df] = inp.value;
+        inp.addEventListener(ev, async () => {
           if (inp === statusSel) {
-            if (inp.value === 'in_use' && !draft.openedDate) {
+            const prevStatus = draft.status;
+            const nextVal = inp.value;
+            if (nextVal === 'unopened' && draft.openedDate) {
+              const ok = await dialog.confirm({
+                title: '确认恢复为未开封？',
+                message: draft.confirmedExpiryDate
+                  ? `切换后将清空原开封日期与原确认到期日（${draft.confirmedExpiryDate}），并重新按照生产日期和未开封保质期计算到期日。`
+                  : '切换后将清空原开封日期，并重新按照生产日期和未开封保质期计算到期日。',
+                confirmLabel: '确认恢复未开封',
+                cancelLabel: '取消',
+              });
+              if (!ok) {
+                inp.value = prevStatus;
+                inp.dispatchEvent(new Event('change'));
+                return;
+              }
+              draft.openedDate = '';
+              draft.confirmedExpiryDate = '';
+              if (openedInp) openedInp.value = '';
+              if (confInp) confInp.value = '';
+            } else if (nextVal === 'in_use' && !draft.openedDate) {
               const t = todayStr();
               draft.openedDate = t;
-              if (openedInp) {
-                openedInp.value = t;
-                openedInp.dispatchEvent(new Event('input'));
-              }
-            } else if (inp.value === 'used_up') {
+              if (openedInp) openedInp.value = t;
+            } else if (nextVal === 'used_up') {
               draft.remainingPercent = 0;
               if (remInp) remInp.value = '0';
             }
+            draft.status = nextVal;
+            openedInp?.dispatchEvent(new Event('input'));
+            return;
           }
+          draft[inp.dataset.df] = inp.value;
         });
       });
 
@@ -1580,26 +1679,10 @@ function openEditSingleItemSheet(prod, item) {
           minor = parsed.minor;
         }
 
-        // 若从「使用中」改回「未开封」且仍留着开封日期，则弹出确认框并在确认后清空开封日期
-        let nextOpenedInput = draft.openedDate;
-        if (item.status === 'in_use' && draft.status === 'unopened' && String(nextOpenedInput || '').trim()) {
-          const ok = await dialog.confirm({
-            title: '确认恢复为未开封？',
-            message: '切换后将清空原开封日期，并重新按照生产日期和未开封保质期计算到期日。',
-            confirmLabel: '确认恢复未开封',
-            cancelLabel: '取消',
-          });
-          if (!ok) return;
-          nextOpenedInput = '';
-          draft.openedDate = '';
-          if (openedInp) openedInp.value = '';
-        }
-
         const check = validateC1ItemTransitionAndFields({
           previousItem: item,
           nextInput: {
             ...draft,
-            openedDate: nextOpenedInput,
             purchasePriceMinor: minor,
             acquisitionMethod: draft.acquisitionPreset || '',
           },
