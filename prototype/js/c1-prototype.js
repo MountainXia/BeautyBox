@@ -12,10 +12,12 @@ import {
   C1_ITEM_STATUSES,
   C1_QUANTITY_UNITS,
   C1_SPEC_UNITS,
+  C1_STATUS_FILTER_META,
   composeProductDisplayName,
   createC1InitialState,
   describeC1ItemDualExpiry,
   evaluateC1QuickStatusOption,
+  filterC1ProductItems,
   findCategoryNames,
   formatC1Price,
   formatSpecDisplay,
@@ -47,6 +49,7 @@ const ui = {
   search: '',
   primaryCatId: 'all',
   statusFilter: 'all', // 'all' | 'in_use' | 'unopened' | 'unrecorded' | 'near' | 'used_up'
+  detailFilter: 'all', // 从某个状态筛选进入详情时聚焦显示对应实例，支持一键切换查看全部
   catScrollLeft: 0,
   statusScrollLeft: 0,
   expandedItemIds: new Set(),
@@ -127,6 +130,80 @@ function setHeader({ title, subtitle = '', backBtnAttr = '', actionsHtml = '' })
 
 /* ---------------- 视图 1：产品列表 ---------------- */
 
+function buildListCardPresentation({ filterKey, unit, sum, match }) {
+  const { matchedCount, matchedInUseCount, matchedUnopenedCount, matchedExpiredCount, matchedNearCount } = match;
+  if (filterKey === 'all') {
+    const statusBits = [];
+    if (sum.inUseCount > 0) statusBits.push(`使用中 ${sum.inUseCount}`);
+    if (sum.unopenedCount > 0) statusBits.push(`未开封 ${sum.unopenedCount}`);
+    if (sum.unrecordedCount > 0) statusBits.push(`待补充信息 ${sum.unrecordedCount}`);
+    return {
+      pillClass: 'pill-accent',
+      pillText: `拥有 ${sum.heldCount} ${unit}`,
+      summaryText: statusBits.length > 0 ? statusBits.join(' · ') : `已全部用完（历史 ${sum.usedUpCount} ${unit}）`,
+      expiredCount: sum.expiredCount,
+      nearCount: sum.nearExpiryCount,
+    };
+  }
+
+  if (filterKey === 'in_use') {
+    return {
+      pillClass: 'pill-accent',
+      pillText: `使用中 ${matchedCount} ${unit}`,
+      summaryText: sum.heldCount > matchedCount ? `使用中 ${matchedCount} ${unit} · 当前共持有 ${sum.heldCount} ${unit}` : `使用中 ${matchedCount} ${unit}`,
+      expiredCount: matchedExpiredCount,
+      nearCount: matchedNearCount,
+    };
+  }
+
+  if (filterKey === 'unopened') {
+    return {
+      pillClass: 'pill-sage',
+      pillText: `未开封 ${matchedCount} ${unit}`,
+      summaryText: sum.heldCount > matchedCount ? `未开封 ${matchedCount} ${unit} · 当前共持有 ${sum.heldCount} ${unit}` : `未开封 ${matchedCount} ${unit}`,
+      expiredCount: matchedExpiredCount,
+      nearCount: matchedNearCount,
+    };
+  }
+
+  if (filterKey === 'unrecorded') {
+    const restHeld = sum.heldCount - matchedCount;
+    return {
+      pillClass: '',
+      pillText: `待补充 ${matchedCount} ${unit}`,
+      summaryText: restHeld > 0
+        ? `待补充信息 ${matchedCount} ${unit}（尚未记录状态/日期） · 另有 ${restHeld} ${unit}已记录`
+        : `待补充信息 ${matchedCount} ${unit}（尚未记录状态或有效期）`,
+      expiredCount: 0,
+      nearCount: 0,
+    };
+  }
+
+  if (filterKey === 'near') {
+    const nearBits = [];
+    if (matchedInUseCount > 0) nearBits.push(`使用中 ${matchedInUseCount}`);
+    if (matchedUnopenedCount > 0) nearBits.push(`未开封 ${matchedUnopenedCount}`);
+    return {
+      pillClass: matchedExpiredCount > 0 ? 'pill-danger' : 'pill-amber',
+      pillText: `临期/过期 ${matchedCount} ${unit}`,
+      summaryText: `${nearBits.join(' · ') || `临期/过期 ${matchedCount} ${unit}`}${sum.heldCount > matchedCount ? ` · 当前共持有 ${sum.heldCount} ${unit}` : ''}`,
+      expiredCount: matchedExpiredCount,
+      nearCount: matchedNearCount,
+    };
+  }
+
+  // used_up
+  return {
+    pillClass: '',
+    pillText: `已用完 ${matchedCount} ${unit}`,
+    summaryText: sum.heldCount > 0
+      ? `历史已用完 ${matchedCount} ${unit} · 当前仍持有 ${sum.heldCount} ${unit}`
+      : `历史已用完 ${matchedCount} ${unit}`,
+    expiredCount: 0,
+    nearCount: 0,
+  };
+}
+
 function renderListView() {
   const today = todayStr();
   const nearDays = state.settings.nearExpiryDays;
@@ -136,8 +213,9 @@ function renderListView() {
   let totalHeldUnits = 0;
   const rows = activeProducts.map((p) => {
     const sum = summarizeProductCounts(p, state.items, { today, nearDays });
+    const match = filterC1ProductItems(p, state.items, ui.statusFilter, { today, nearDays });
     totalHeldUnits += sum.heldCount;
-    return { prod: p, sum, displayName: getDisplayName(p) };
+    return { prod: p, sum, match, displayName: getDisplayName(p) };
   });
 
   setHeader({
@@ -150,22 +228,9 @@ function renderListView() {
   });
 
   const q = ui.search.trim().toLowerCase();
-  const filtered = rows.filter(({ prod, sum, displayName }) => {
+  const filtered = rows.filter(({ prod, match, displayName }) => {
     if (ui.primaryCatId !== 'all' && prod.primaryCategoryId !== ui.primaryCatId) return false;
-    if (ui.statusFilter === 'used_up') {
-      if (sum.usedUpCount === 0) return false;
-    } else if (ui.statusFilter === 'in_use') {
-      if (sum.inUseCount === 0) return false;
-    } else if (ui.statusFilter === 'unopened') {
-      if (sum.unopenedCount === 0) return false;
-    } else if (ui.statusFilter === 'unrecorded') {
-      if (sum.unrecordedCount === 0) return false;
-    } else if (ui.statusFilter === 'near') {
-      if (sum.nearExpiryCount + sum.expiredCount === 0) return false;
-    } else {
-      // 默认“全部”视图只显示当前仍拥有至少 1 件的产品（避免已全部用完的老产品混杂当前库存认知）
-      if (sum.heldCount === 0) return false;
-    }
+    if (match.matchedCount === 0) return false;
     if (q) {
       const { primaryName, subName } = findCategoryNames(prod.primaryCategoryId, prod.subCategoryId);
       const hay = [displayName, prod.brand, prod.shade, primaryName, subName].join(' ').toLowerCase();
@@ -175,12 +240,12 @@ function renderListView() {
   });
 
   const filterChips = [
-    { id: 'all', label: '当前拥有' },
-    { id: 'in_use', label: '使用中' },
-    { id: 'unopened', label: '未开封' },
-    { id: 'unrecorded', label: '待补充信息' },
-    { id: 'near', label: '临期/过期' },
-    { id: 'used_up', label: '已用完记录' },
+    C1_STATUS_FILTER_META.all,
+    C1_STATUS_FILTER_META.in_use,
+    C1_STATUS_FILTER_META.unopened,
+    C1_STATUS_FILTER_META.unrecorded,
+    C1_STATUS_FILTER_META.near,
+    C1_STATUS_FILTER_META.used_up,
   ];
 
   mainEl.innerHTML = `
@@ -218,7 +283,7 @@ function renderListView() {
       <div class="chips-scroll" id="c1-status-scroll">
         ${filterChips
           .map(
-            (f) => `<button type="button" class="chip ${ui.statusFilter === f.id ? 'is-active' : ''}" data-c1-status="${esc(f.id)}">${esc(f.label)}</button>`,
+            (f) => `<button type="button" class="chip ${ui.statusFilter === f.key ? 'is-active' : ''}" data-c1-status="${esc(f.key)}">${esc(f.label)}</button>`,
           )
           .join('')}
       </div>
@@ -234,13 +299,10 @@ function renderListView() {
         : `
           <div class="stack-sm">
             ${filtered
-              .map(({ prod, sum, displayName }) => {
+              .map(({ prod, sum, match, displayName }) => {
                 const { primaryName, subName } = findCategoryNames(prod.primaryCategoryId, prod.subCategoryId);
                 const unit = prod.quantityUnit || '件';
-                const statusBits = [];
-                if (sum.inUseCount > 0) statusBits.push(`使用中 ${sum.inUseCount}`);
-                if (sum.unopenedCount > 0) statusBits.push(`未开封 ${sum.unopenedCount}`);
-                if (sum.unrecordedCount > 0) statusBits.push(`待补充信息 ${sum.unrecordedCount}`);
+                const pres = buildListCardPresentation({ filterKey: ui.statusFilter, unit, sum, match });
 
                 return `
                   <button type="button" class="product-list-row" data-c1-open="${esc(prod.id)}">
@@ -248,20 +310,18 @@ function renderListView() {
                     <div style="flex:1;min-width:0;">
                       <div class="row-between" style="gap:6px;">
                         <div style="font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(displayName)}</div>
-                        <span class="pill pill-accent">拥有 ${sum.heldCount} ${esc(unit)}</span>
+                        <span class="pill ${esc(pres.pillClass)}">${esc(pres.pillText)}</span>
                       </div>
                       <div class="muted-note" style="margin-top:2px;">
                         ${esc([primaryName, subName, formatSpecDisplay({ value: prod.specValue, unit: prod.specUnit, customUnit: prod.specCustomUnit })].filter(Boolean).join(' · '))}
                       </div>
                       <div class="muted-note" style="margin-top:5px;">
-                        ${statusBits.length > 0
-                          ? esc(statusBits.join(' · '))
-                          : `已全部用完（历史 ${sum.usedUpCount} ${esc(unit)}）`}
+                        ${esc(pres.summaryText)}
                       </div>
-                      ${(sum.expiredCount > 0 || sum.nearExpiryCount > 0) ? `
+                      ${(pres.expiredCount > 0 || pres.nearCount > 0) ? `
                         <div class="row-wrap" style="margin-top:5px;">
-                          ${sum.expiredCount > 0 ? `<span class="pill pill-danger">⚠ 其中 ${sum.expiredCount} ${esc(unit)}已过期</span>` : ''}
-                          ${sum.nearExpiryCount > 0 ? `<span class="pill pill-amber">⚠ 其中 ${sum.nearExpiryCount} ${esc(unit)}即将到期</span>` : ''}
+                          ${pres.expiredCount > 0 ? `<span class="pill pill-danger">⚠ 其中 ${pres.expiredCount} ${esc(unit)}已过期</span>` : ''}
+                          ${pres.nearCount > 0 ? `<span class="pill pill-amber">⚠ 其中 ${pres.nearCount} ${esc(unit)}即将到期</span>` : ''}
                         </div>
                       ` : ''}
                     </div>
@@ -337,7 +397,8 @@ function bindListEvents() {
     el.addEventListener('click', () => {
       ui.selectedProductId = el.dataset.c1Open;
       ui.page = 'detail';
-      ui.showUsedUpHistory = false;
+      ui.detailFilter = ui.statusFilter || 'all';
+      ui.showUsedUpHistory = ui.detailFilter === 'used_up';
       render();
     });
   });
@@ -446,6 +507,18 @@ function renderDetailView() {
     `;
   };
 
+  const isFilteredDetail = ui.detailFilter && ui.detailFilter !== 'all';
+  const detailFilterMeta = C1_STATUS_FILTER_META[ui.detailFilter] || C1_STATUS_FILTER_META.all;
+  const detailMatch = isFilteredDetail
+    ? filterC1ProductItems(prod, state.items, ui.detailFilter, { today, nearDays })
+    : null;
+  const heldIdxById = new Map(sum.heldItems.map((it, i) => [it.id, i]));
+  const usedIdxById = new Map(sum.usedUpItems.map((it, i) => [it.id, i]));
+  const resolveStableIdx = (it) =>
+    it.status === 'used_up' ? (usedIdxById.get(it.id) ?? 0) : (heldIdxById.get(it.id) ?? 0);
+  const primaryItems = isFilteredDetail ? detailMatch.matchedItems : sum.heldItems;
+  const totalItemCount = sum.heldCount + sum.usedUpCount;
+
   mainEl.innerHTML = `
     <div class="stack">
       <!-- 顶部简洁产品概览 -->
@@ -485,25 +558,46 @@ function renderDetailView() {
         </div>
       </div>
 
+      ${isFilteredDetail ? `
+        <div class="card-muted row-between" style="gap:8px;padding:10px 12px;">
+          <span style="font-size:12px;color:var(--text-secondary);">
+            当前仅看「<strong>${esc(detailFilterMeta.label)}</strong>」（${detailMatch.matchedCount} ${esc(unit)}）
+          </span>
+          <button type="button" class="ghost-mini-btn" data-c1-detail-show-all="1">查看全部（${totalItemCount}）</button>
+        </div>
+      ` : ''}
+
       <!-- 每件产品明细区（默认紧凑，点击展开） -->
       <div class="stack-sm">
         <div class="section-header" style="margin-bottom:0;">
-          <h2 class="section-title">我的每件产品（${sum.heldCount} ${esc(unit)}）</h2>
+          <h2 class="section-title">${isFilteredDetail
+            ? `${esc(detailFilterMeta.label)}（${primaryItems.length} ${esc(unit)}）`
+            : `我的每件产品（${sum.heldCount} ${esc(unit)}）`}</h2>
           <span class="section-hint">点卡片可展开或修改状态</span>
         </div>
-        ${sum.heldItems.length === 0
-          ? renderEmptyState({
-              icon: '🧴',
-              title: '当前没有正在使用的这一款',
-              desc: '新购入时点上方「+ 添加一件」，已有历史用完记录仍安全保留在下方。',
-              actionLabel: '+ 添加一件',
-              actionAttr: 'data-c1-detail-add-one="1"',
-            })
-          : sum.heldItems.map((it, idx) => renderItemCard(it, idx, false)).join('')}
+        ${primaryItems.length === 0
+          ? (isFilteredDetail
+              ? renderEmptyState({
+                  icon: '✧',
+                  title: `当前「${detailFilterMeta.label}」下暂无产品`,
+                  desc: totalItemCount > 0
+                    ? `该品牌产品下还有 ${totalItemCount} ${unit}其他状态记录，可点击下方按钮查看全部。`
+                    : '新购入时可点上方「+ 添加一件」。',
+                  actionLabel: totalItemCount > 0 ? `查看全部实例（${totalItemCount}）` : '+ 添加一件',
+                  actionAttr: totalItemCount > 0 ? 'data-c1-detail-show-all="1"' : 'data-c1-detail-add-one="1"',
+                })
+              : renderEmptyState({
+                  icon: '🧴',
+                  title: '当前没有正在使用的这一款',
+                  desc: '新购入时点上方「+ 添加一件」，已有历史用完记录仍安全保留在下方。',
+                  actionLabel: '+ 添加一件',
+                  actionAttr: 'data-c1-detail-add-one="1"',
+                }))
+          : primaryItems.map((it) => renderItemCard(it, resolveStableIdx(it), it.status === 'used_up')).join('')}
       </div>
 
-      <!-- 历史用完折叠区 -->
-      ${sum.usedUpCount > 0 ? `
+      <!-- 历史用完折叠区（未按单一状态筛选时展示） -->
+      ${(!isFilteredDetail && sum.usedUpCount > 0) ? `
         <div class="card">
           <button type="button" class="me-accordion-trigger" id="c1-toggle-usedup" style="padding:0;min-height:32px;">
             <span style="font-weight:700;font-size:14px;">历史用完记录（${sum.usedUpCount} ${esc(unit)}）</span>
@@ -558,12 +652,22 @@ function bindDetailEvents(prod, sum, unit) {
     };
     state.items.push(newItem);
     ui.expandedItemIds.add(newItem.id);
+    if (ui.detailFilter !== 'all' && ui.detailFilter !== 'unrecorded') {
+      ui.detailFilter = 'all';
+    }
     toast(`已增加 1 ${unit}（默认为未记录，可随时补充详情）`);
     render();
   };
 
   mainEl.querySelector('#c1-qty-inc')?.addEventListener('click', addOneItem);
   mainEl.querySelector('[data-c1-detail-add-one]')?.addEventListener('click', addOneItem);
+  mainEl.querySelectorAll('[data-c1-detail-show-all]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      ui.detailFilter = 'all';
+      ui.showUsedUpHistory = false;
+      render();
+    });
+  });
 
   // 点击“−”减少数量时，明确区分「标记用完」和「移除这一件」
   mainEl.querySelector('#c1-qty-dec')?.addEventListener('click', () => {

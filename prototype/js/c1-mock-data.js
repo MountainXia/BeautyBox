@@ -172,6 +172,70 @@ export function summarizeProductCounts(product, items, { today = todayStr(), nea
   };
 }
 
+/** 列表/详情状态筛选标签元信息 */
+export const C1_STATUS_FILTER_META = Object.freeze({
+  all: { key: 'all', label: '当前拥有' },
+  in_use: { key: 'in_use', label: '使用中' },
+  unopened: { key: 'unopened', label: '未开封' },
+  unrecorded: { key: 'unrecorded', label: '待补充信息' },
+  near: { key: 'near', label: '临期/过期' },
+  used_up: { key: 'used_up', label: '已用完记录' },
+});
+
+/**
+ * 按筛选状态提取某个产品下匹配的实例及对应的细分统计，
+ * 让列表卡片与详情页能够聚焦展示所选状态的真实数量与实例，而非一律混同全量。
+ */
+export function filterC1ProductItems(product, items, filterKey = 'all', { today = todayStr(), nearDays = 30 } = {}) {
+  const activeItems = items.filter((i) => i.productId === product.id && !i.deletedAt);
+  const key = C1_STATUS_FILTER_META[filterKey] ? filterKey : 'all';
+
+  const matchedItems = activeItems.filter((item) => {
+    if (key === 'used_up') return item.status === 'used_up';
+    const isHeld = Boolean(C1_ITEM_STATUSES[item.status]?.held);
+    if (!isHeld) return false;
+    if (key === 'all') return true;
+    if (key === 'in_use' || key === 'unopened' || key === 'unrecorded') return item.status === key;
+    if (key === 'near') {
+      const exp = expiryStatus(resolveC1ItemExpiryForDisplay(item), today, nearDays);
+      return exp.key === 'near' || exp.key === 'expired';
+    }
+    return false;
+  });
+
+  let matchedInUseCount = 0;
+  let matchedUnopenedCount = 0;
+  let matchedUnrecordedCount = 0;
+  let matchedUsedUpCount = 0;
+  let matchedExpiredCount = 0;
+  let matchedNearCount = 0;
+
+  for (const item of matchedItems) {
+    if (item.status === 'in_use') matchedInUseCount += 1;
+    else if (item.status === 'unopened') matchedUnopenedCount += 1;
+    else if (item.status === 'unrecorded') matchedUnrecordedCount += 1;
+    else if (item.status === 'used_up') matchedUsedUpCount += 1;
+
+    if (item.status !== 'used_up') {
+      const exp = expiryStatus(resolveC1ItemExpiryForDisplay(item), today, nearDays);
+      if (exp.key === 'expired') matchedExpiredCount += 1;
+      else if (exp.key === 'near') matchedNearCount += 1;
+    }
+  }
+
+  return {
+    filterKey: key,
+    matchedItems,
+    matchedCount: matchedItems.length,
+    matchedInUseCount,
+    matchedUnopenedCount,
+    matchedUnrecordedCount,
+    matchedUsedUpCount,
+    matchedExpiredCount,
+    matchedNearCount,
+  };
+}
+
 function offsetDate(days) {
   const dt = new Date();
   dt.setDate(dt.getDate() + days);
