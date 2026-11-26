@@ -58,6 +58,52 @@
       border: 1px dashed rgba(35, 31, 29, 0.16);
       box-shadow: none;
     }
+    /* 防止标签、分段按钮、标题括号与单位在窄屏下换行断裂 */
+    .pill,
+    .chip,
+    .ghost-mini-btn,
+    .btn-sm,
+    .seg-btn {
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .c1-subseg {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .c1-subseg::-webkit-scrollbar {
+      display: none;
+    }
+    .c1-subseg .seg-btn {
+      flex: 1 0 auto;
+      padding: 0 10px;
+      font-size: 12px;
+      min-height: 34px;
+    }
+    .segmented {
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .segmented::-webkit-scrollbar {
+      display: none;
+    }
+    .segmented .seg-btn {
+      padding: 0 10px;
+    }
+    .section-header {
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      align-items: baseline;
+    }
+    .section-title {
+      white-space: nowrap;
+    }
+    .section-hint {
+      white-space: normal;
+    }
   </style>
 </head>
 <body>

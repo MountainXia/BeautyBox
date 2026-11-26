@@ -297,7 +297,7 @@ function renderPendingListContent(scopedRows) {
 
   return `
     <div class="stack-sm">
-      <div class="segmented" id="c1-pending-subbar">
+      <div class="segmented c1-subseg" id="c1-pending-subbar">
         <button type="button" class="seg-btn ${subFilter === 'all' ? 'is-active' : ''}" data-c1-pending-sub="all">全部 (${totalPendingAll})</button>
         <button type="button" class="seg-btn ${subFilter === 'pending_status' ? 'is-active' : ''}" data-c1-pending-sub="pending_status">待记录使用状态 (${totalPendingStatusUnits})</button>
         <button type="button" class="seg-btn ${subFilter === 'incomplete_expiry' ? 'is-active' : ''}" data-c1-pending-sub="incomplete_expiry">有效期信息待完善 (${totalIncompleteExpiryUnits})</button>
@@ -649,7 +649,7 @@ function renderDetailView() {
                 })
                 .join('')}
             </div>
-            <div class="row-between" style="margin-top:6px;gap:8px;">
+            <div class="row-wrap" style="margin-top:6px;gap:8px;align-items:center;">
               <button type="button" class="btn btn-secondary btn-sm" data-c1-edit-item="${esc(item.id)}">编辑详细信息</button>
               ${item.status === 'unopened'
                 ? `<button type="button" class="btn btn-soft btn-sm" data-c1-open-today="${esc(item.id)}">今日开封</button>`
