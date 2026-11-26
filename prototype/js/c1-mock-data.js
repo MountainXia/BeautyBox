@@ -584,10 +584,10 @@ export function formatC1UsageDuration(openedDate, usedUpDate) {
     return { valid: false, days: diffDays, text: '', error: '用完日期不能早于开封日期' };
   }
   if (diffDays === 0) {
-    return { valid: true, days: 0, text: '0 天（开封当天用完）', error: '' };
+    return { valid: true, days: 0, text: '0天（开封当天用完）', error: '' };
   }
   if (diffDays < 30) {
-    return { valid: true, days: diffDays, text: `${diffDays} 天`, error: '' };
+    return { valid: true, days: diffDays, text: `${diffDays}天`, error: '' };
   }
 
   let months = (end.y - start.y) * 12 + (end.mo - start.mo);
@@ -598,8 +598,8 @@ export function formatC1UsageDuration(openedDate, usedUpDate) {
   }
   const remDays = Math.round((end.ms - anchorMs) / 86400000);
   const spanLabel = months > 0
-    ? (remDays > 0 ? `${months} 个月 ${remDays} 天（共 ${diffDays} 天）` : `${months} 个月（共 ${diffDays} 天）`)
-    : `${diffDays} 天`;
+    ? (remDays > 0 ? `${months}个月${remDays}天（共${diffDays}天）` : `${months}个月（共${diffDays}天）`)
+    : `${diffDays}天`;
   return { valid: true, days: diffDays, text: spanLabel, error: '' };
 }
 

@@ -585,7 +585,7 @@ function renderDetailView() {
       ? `用完 ${item.usedUpDate || '未填日期'}`
       : (resolved.date ? shortExpiry : '有效期：待完善');
     const compactRight = isUsedUp
-      ? `${usageDur?.valid ? `使用时长 ${usageDur.text}` : '待补开封日计算时长'}${priceText ? ` · ${priceText}` : ''}`
+      ? `${usageDur?.valid ? `用时 ${usageDur.text}` : '待补开封日计算时长'}${priceText ? ` · ${priceText}` : ''}`
       : `剩余 ${item.remainingPercent}%${priceText ? ` · ${priceText}` : ''}`;
 
     const statusOptions = [
@@ -796,7 +796,7 @@ function openMarkUsedUpSheet(item) {
           <label>用完日期 <span class="req">*</span></label>
           <input class="input" type="date" name="usedUpDate" value="${esc(defaultDate)}" required />
         </div>
-        <div class="card-muted" style="font-size:12px;color:var(--text-secondary);" data-uu-duration-box></div>
+        <div class="card-muted" style="padding:10px 12px;font-size:12px;color:var(--text-secondary);" data-uu-duration-box></div>
         <div class="field-row">
           <button type="button" class="btn btn-secondary" data-uu-cancel="1">取消</button>
           <button type="submit" class="btn btn-primary">确认已用完</button>
@@ -812,12 +812,12 @@ function openMarkUsedUpSheet(item) {
       const refreshDuration = () => {
         const val = String(dateInp?.value || '').trim();
         if (!item.openedDate) {
-          durBox.textContent = '开封日期：未填（如需计算从开封到用完的使用时长，可在编辑详细信息中补填开封日期）';
+          durBox.textContent = '开封日期未填（可在编辑详情补填以计算使用时长）';
           return;
         }
         const dur = formatC1UsageDuration(item.openedDate, val);
         if (dur.valid) {
-          durBox.innerHTML = `开封日期：<strong>${esc(item.openedDate)}</strong> → 使用时长：<strong>${esc(dur.text)}</strong>`;
+          durBox.innerHTML = `<div class="row-between" style="gap:6px;white-space:nowrap;"><span>开封 <strong>${esc(item.openedDate)}</strong></span><span>用时 <strong>${esc(dur.text)}</strong></span></div>`;
         } else {
           durBox.innerHTML = `<span style="color:var(--danger);">${esc(dur.error || '请选择有效的用完日期')}</span>`;
         }
