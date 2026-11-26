@@ -807,16 +807,6 @@ function openWearReviewSheet({ store, sheet, toast, lookId, onSaved }) {
             badgeText: '节点实测图',
             subtitle: `${formatBytes(pendingFile.size)} · 保存后写入 IndexedDB`,
           });
-        } else if (preserveExistingAssetId) {
-          const url = store.getAssetUrl(preserveExistingAssetId);
-          previewWrap.innerHTML = url
-            ? renderUploadPreview({
-                previewUrl: url,
-                title: '当前妆容照片',
-                badgeText: '已保存封面',
-                subtitle: '保留原图（可重新上传或改选示例图）',
-              })
-            : '';
         } else {
           previewWrap.innerHTML = '';
         }

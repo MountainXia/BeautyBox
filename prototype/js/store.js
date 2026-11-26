@@ -282,6 +282,7 @@ export function getItemExpiryCompleteness(item) {
       isIncompleteExpiry: false,
       isComplete: status !== 'unrecorded' && !conflict.hasConflict,
       missingReason: '',
+      shortMissingLabel: '',
       conflict,
     };
   }
@@ -294,25 +295,42 @@ export function getItemExpiryCompleteness(item) {
       isIncompleteExpiry: false,
       isComplete: true,
       missingReason: '',
+      shortMissingLabel: '',
       conflict,
     };
   }
 
   let missingReason = '缺少到期信息（可补充或直接填写确认到期日）';
+  let shortMissingLabel = '缺到期信息';
   if (status === 'unopened') {
     const hasMfg = Boolean(String(item?.manufactureDate || '').trim());
     const hasShelf = Boolean(item?.unopenedShelfMonths);
-    if (!hasMfg && !hasShelf) missingReason = '缺生产日期与未开封保质期（或直接确认到期日）';
-    else if (!hasMfg) missingReason = '缺生产日期（或直接确认到期日）';
-    else if (!hasShelf) missingReason = '缺未开封保质期（或直接确认到期日）';
+    if (!hasMfg && !hasShelf) {
+      missingReason = '缺生产日期与未开封保质期（或直接确认到期日）';
+      shortMissingLabel = '缺生产日期与保质期';
+    } else if (!hasMfg) {
+      missingReason = '缺生产日期（或直接确认到期日）';
+      shortMissingLabel = '缺生产日期';
+    } else if (!hasShelf) {
+      missingReason = '缺未开封保质期（或直接确认到期日）';
+      shortMissingLabel = '缺未开封保质期';
+    }
   } else if (status === 'in_use') {
     const hasOpened = Boolean(String(item?.openedDate || '').trim());
     const hasPao = Boolean(item?.paoMonths);
-    if (!hasOpened && !hasPao) missingReason = '缺开封日期与 PAO（或直接确认到期日）';
-    else if (!hasPao) missingReason = '缺 PAO 期限（或直接确认到期日）';
-    else if (!hasOpened) missingReason = '缺开封日期（或直接确认到期日）';
+    if (!hasOpened && !hasPao) {
+      missingReason = '缺开封日期与 PAO（或直接确认到期日）';
+      shortMissingLabel = '缺开封日期与 PAO';
+    } else if (!hasPao) {
+      missingReason = '缺 PAO 期限（或直接确认到期日）';
+      shortMissingLabel = '缺 PAO';
+    } else if (!hasOpened) {
+      missingReason = '缺开封日期（或直接确认到期日）';
+      shortMissingLabel = '缺开封日期';
+    }
   } else if (status === 'idle') {
     missingReason = '缺 PAO / 保质期（或直接确认到期日）';
+    shortMissingLabel = '缺 PAO / 保质期';
   }
 
   return {
@@ -321,6 +339,7 @@ export function getItemExpiryCompleteness(item) {
     isIncompleteExpiry: true,
     isComplete: false,
     missingReason,
+    shortMissingLabel,
     conflict,
   };
 }
@@ -600,7 +619,7 @@ export function validateItemTransitionAndFields({ previousItem = null, nextInput
       paoMonths,
       confirmedExpiryDate,
       purchaseDate,
-      remainingPercent: targetStatus === 'used_up' ? 0 : remainingRaw,
+      remainingPercent: targetStatus === 'used_up' ? 0 : (targetStatus === 'unopened' ? 100 : remainingRaw),
     },
   };
 }
@@ -1382,7 +1401,7 @@ export class PrototypeStore {
       expiryConfirmedAt: confirmation.expiryConfirmedAt,
       expiryNeedsReconfirm: confirmation.expiryNeedsReconfirm,
       status,
-      remainingPercent: status === 'used_up' ? 0 : remRaw,
+      remainingPercent: status === 'used_up' ? 0 : (status === 'unopened' ? 100 : remRaw),
       lastUsedAt: targetPrev ? targetPrev.lastUsedAt : null,
       createdAt: targetPrev ? targetPrev.createdAt : now,
       updatedAt: now,
@@ -2096,11 +2115,13 @@ export class PrototypeStore {
       'manufacture_date',
       'unopened_shelf_months',
       'opened_date',
+      'used_up_date',
       'pao_months',
       'computed_expiry_date',
       'confirmed_expiry_date',
       'remaining_percent',
       'archived_at',
+      'deleted_at',
     ];
     const rows = this.state.productItems.map((i) => {
       const p = this.state.products.find((pr) => pr.id === i.productId);
@@ -2118,11 +2139,13 @@ export class PrototypeStore {
         i.manufactureDate ?? '',
         i.unopenedShelfMonths ?? '',
         i.openedDate ?? '',
+        i.usedUpDate ?? '',
         i.paoMonths ?? '',
         i.computedExpiryDate ?? '',
         i.confirmedExpiryDate ?? '',
         i.remainingPercent,
         i.archivedAt ?? '',
+        i.deletedAt ?? '',
       ].map(esc).join(',');
     });
     return `\uFEFF${header.join(',')}\n${rows.join('\n')}`;
@@ -2135,7 +2158,7 @@ export class PrototypeStore {
       {
         manifest: {
           backup_format_version: 1,
-          schema_version: 1,
+          schema_version: this.state.version || 2,
           app_version: 'prototype-task02',
           created_at: now,
           product_count: this.state.products.length,

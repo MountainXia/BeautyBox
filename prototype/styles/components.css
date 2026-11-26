@@ -49,6 +49,7 @@
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
+  background: var(--bg-page);
   padding: var(--space-4) var(--space-4) calc(var(--tabbar-height) + var(--safe-bottom) + 28px);
 }
 

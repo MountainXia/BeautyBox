@@ -14,7 +14,6 @@ import {
 import { bindHomeEvents, renderHomeView } from './views/homeView.js';
 import {
   bindBoxEvents,
-  openItemFormSheet,
   openProductFormSheet,
   renderBoxView,
 } from './views/boxView.js';

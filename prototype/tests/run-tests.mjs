@@ -683,3 +683,126 @@ test('TASK02.1-C2：未记录状态与统计口径、名称自动组合、原子
     assert.equal(/\bProductItem\b|持有实例|产品主档|产品档案|产品实例|款资料|导出实例/.test(src), false, `${rel} 不得向普通用户暴露内部专业术语`);
   }
 });
+
+test('TASK02.1-M9 生命周期转换矩阵、未开封重置 100%、过期与未开封并存、缺失字段细化及导出白名单', () => {
+  const storage = createMemoryStorage();
+  const mediaOps = createFakeMediaOps();
+  const store = new PrototypeStore({ storage, mediaOps });
+
+  // 1. 仅填开封日期进入使用中（无 PAO 与确认日）-> 不进入待记录使用状态，进入有效期信息待完善且明确提示缺 PAO
+  const prodRes = store.saveProductWithItems({
+    productInput: {
+      categoryId: 'cat-base',
+      subCategoryId: 'sub-foundation',
+      brandName: 'Armani',
+      shade: '#2',
+    },
+    quantity: 1,
+    itemInputs: [
+      {
+        status: 'in_use',
+        manufactureDate: '2024-01-01',
+        unopenedShelfMonths: '12',
+        openedDate: '2026-01-01',
+        remainingPercent: '60',
+        currencyCode: 'CNY',
+        purchasePriceInput: '580.00',
+      },
+    ],
+  });
+  assert.equal(prodRes.ok, true);
+  const item0 = prodRes.items[0];
+  const comp0 = getItemExpiryCompleteness(item0);
+  assert.equal(comp0.isPendingStatus, false);
+  assert.equal(comp0.isIncompleteExpiry, true);
+  assert.equal(comp0.shortMissingLabel, '缺 PAO');
+  assert.match(comp0.missingReason, /缺 PAO/);
+
+  // 2. 使用中 -> 恢复未开封：清空开封日与确认日，剩余比例强制重置为 100%，按未开封规则重算到期日，且可与「已过期」并存
+  const toUnopenedCheck = validateItemTransitionAndFields({
+    previousItem: item0,
+    nextInput: {
+      ...item0,
+      status: 'unopened',
+      openedDate: null,
+      confirmedExpiryDate: null,
+      remainingPercent: '60', // 即便传入 60%，未开封规范必须重置为 100%
+    },
+  });
+  assert.equal(toUnopenedCheck.ok, true);
+  assert.equal(toUnopenedCheck.normalized.remainingPercent, 100);
+  const reopenedSave = store.saveProductItem({
+    ...item0,
+    purchasePriceInput: '580.00',
+    status: 'unopened',
+    remainingPercent: 60,
+    openedDate: null,
+    confirmedExpiryDate: null,
+    usedUpDate: null,
+  });
+  assert.equal(reopenedSave.ok, true);
+  assert.equal(reopenedSave.item.status, 'unopened');
+  assert.equal(reopenedSave.item.openedDate, null);
+  assert.equal(reopenedSave.item.remainingPercent, 100);
+  assert.equal(reopenedSave.item.unopenedComputedExpiry, '2025-01-01');
+  const expWhenUnopened = expiryStatus(resolveItemExpiryForDisplay(reopenedSave.item), '2026-11-26', 30);
+  assert.equal(expWhenUnopened.key, 'expired');
+  assert.equal(getItemExpiryCompleteness(reopenedSave.item).isIncompleteExpiry, false);
+
+  // 3. 已有记录不得退回 unrecorded；已用完不可直接切未开封且提供原因提示
+  assert.equal(
+    validateItemTransitionAndFields({ previousItem: reopenedSave.item, nextInput: { status: 'unrecorded' } }).ok,
+    false,
+  );
+  const usedUpRes = store.saveProductItem({
+    ...reopenedSave.item,
+    purchasePriceInput: '580.00',
+    status: 'used_up',
+    usedUpDate: '2026-11-20',
+    remainingPercent: 0,
+  });
+  assert.equal(usedUpRes.ok, true);
+  const badQuick = evaluateQuickStatusOption(usedUpRes.item, 'unopened');
+  assert.equal(badQuick.allowed, false);
+  assert.match(badQuick.reason, /不能直接改为未开封/);
+  const restoreUseQuick = evaluateQuickStatusOption(usedUpRes.item, 'in_use');
+  assert.equal(restoreUseQuick.allowed, true);
+  assert.equal(restoreUseQuick.requiresConfirm, 'restore_in_use');
+
+  // 4. CSV 导出含 used_up_date/deleted_at，模拟备份 schema_version 为 2，分享白名单彻底排除敏感字段
+  const csv = store.buildProductItemsCsv();
+  assert.match(csv.split('\n')[0], /used_up_date/);
+  assert.match(csv.split('\n')[0], /deleted_at/);
+  const mockPkg = JSON.parse(store.buildMockBackupPackageJson());
+  assert.equal(mockPkg.manifest.schema_version, 2);
+
+  const sharePayload = buildShareCardPayload({
+    look: {
+      name: '早八通勤妆',
+      lookDate: '2026-11-26',
+      style: '清透通勤',
+      scene: '日常通勤',
+      durationMinutes: 15,
+      selfRating: 5,
+      notesPrivate: 'PRIVATE_DIARY_SECRET',
+    },
+    items: [
+      {
+        brandNameSnapshot: 'Armani',
+        productNameSnapshot: 'Armani 粉底液 #2',
+        shadeSnapshot: '#2',
+        purchasePriceMinor: '58000',
+        currencyCode: 'CNY',
+        acquisitionMethod: { preset: '专柜' },
+        notesPrivate: 'ITEM_SECRET',
+      },
+    ],
+    wearList: [],
+    shareOpts: { showPhoto: true, showStyle: true, showDuration: true, showProducts: true, showRating: true, showWear: false },
+  });
+  const payloadJson = JSON.stringify(sharePayload);
+  assert.equal(payloadJson.includes('PRIVATE_DIARY_SECRET'), false);
+  assert.equal(payloadJson.includes('ITEM_SECRET'), false);
+  assert.equal(payloadJson.includes('58000'), false);
+  assert.equal(payloadJson.includes('专柜'), false);
+});

@@ -525,7 +525,11 @@ function renderProductDetail({ store, prod, viewState, today, ctx }) {
 
     const compactLeft = isUsedUp
       ? `用完 ${item.usedUpDate || '未填日期'}`
-      : (resolved.date ? shortExpiry : '有效期：待完善');
+      : (resolved.date
+          ? shortExpiry
+          : (comp.isIncompleteExpiry && comp.shortMissingLabel
+              ? `待完善 · ${comp.shortMissingLabel}`
+              : '有效期：待完善'));
     const compactRight = isUsedUp
       ? `${usageDur?.valid ? `用时 ${usageDur.text}` : '待补开封日计算时长'}${priceText ? ` · ${priceText}` : ''}`
       : `剩余 ${item.remainingPercent}%${priceText ? ` · ${priceText}` : ''}`;
@@ -1591,26 +1595,30 @@ export function openItemFormSheet({ store, sheet, dialog, toast, productId, item
           if (inp === statusSel) {
             const prevStatus = draft.status;
             const nextVal = inp.value;
-            if (nextVal === 'unopened' && draft.openedDate) {
-              const ok = dialog
-                ? await dialog.confirm({
-                    title: '确认恢复为未开封？',
-                    message: draft.confirmedExpiryDate
-                      ? `切换后将清空原开封日期与原确认到期日（${draft.confirmedExpiryDate}），并重新按照生产日期和未开封保质期计算到期日。`
-                      : '切换后将清空原开封日期，并重新按照生产日期和未开封保质期计算到期日。',
-                    confirmLabel: '确认恢复未开封',
-                    cancelLabel: '取消',
-                  })
-                : true;
-              if (!ok) {
-                inp.value = prevStatus;
-                inp.dispatchEvent(new Event('change'));
-                return;
+            if (nextVal === 'unopened') {
+              if (draft.openedDate) {
+                const ok = dialog
+                  ? await dialog.confirm({
+                      title: '确认恢复为未开封？',
+                      message: draft.confirmedExpiryDate
+                        ? `切换后将清空原开封日期与原确认到期日（${draft.confirmedExpiryDate}），剩余比例重置为 100%，并重新按照生产日期和未开封保质期计算到期日。`
+                        : '切换后将清空原开封日期，剩余比例重置为 100%，并重新按照生产日期和未开封保质期计算到期日。',
+                      confirmLabel: '确认恢复未开封',
+                      cancelLabel: '取消',
+                    })
+                  : true;
+                if (!ok) {
+                  inp.value = prevStatus;
+                  inp.dispatchEvent(new Event('change'));
+                  return;
+                }
+                draft.openedDate = '';
+                draft.confirmedExpiryDate = '';
+                if (openedInp) openedInp.value = '';
+                if (confInp) confInp.value = '';
               }
-              draft.openedDate = '';
-              draft.confirmedExpiryDate = '';
-              if (openedInp) openedInp.value = '';
-              if (confInp) confInp.value = '';
+              draft.remainingPercent = 100;
+              if (remInp) remInp.value = '100';
             } else if (nextVal === 'in_use' && !draft.openedDate) {
               const t = todayStr();
               draft.openedDate = t;
@@ -2116,21 +2124,26 @@ export function bindBoxEvents(container, { store, viewState, actions, sheet, dia
         const ok = await dialog.confirm({
           title: '确认恢复为未开封？',
           message: hasConf
-            ? `切换后将清空原开封日期与原确认到期日（${it.confirmedExpiryDate}），并重新按照生产日期和未开封保质期计算到期日。`
-            : '切换后将清空原开封日期，并重新按照生产日期和未开封保质期计算到期日。',
+            ? `切换后将清空原开封日期与原确认到期日（${it.confirmedExpiryDate}），剩余比例重置为 100%，并重新按照生产日期和未开封保质期计算到期日。`
+            : '切换后将清空原开封日期，剩余比例重置为 100%，并重新按照生产日期和未开封保质期计算到期日。',
           confirmLabel: '确认恢复未开封',
           cancelLabel: '取消',
         });
         if (!ok) return;
-        store.saveProductItem({
+        const saveRes = store.saveProductItem({
           ...it,
           purchasePriceInput: priceInput,
           status: 'unopened',
+          remainingPercent: 100,
           openedDate: null,
           confirmedExpiryDate: null,
           usedUpDate: null,
         });
-        toast('已恢复为未开封，已清空原开封日期并重新计算');
+        if (!saveRes.ok) {
+          toast(saveRes.error);
+          return;
+        }
+        toast('已恢复为未开封，已清空原开封日期、重置剩余比例为 100% 并重新计算');
         actions.rerender();
         return;
       }
@@ -2208,13 +2221,18 @@ export function bindBoxEvents(container, { store, viewState, actions, sheet, dia
         toast(check.error);
         return;
       }
-      store.saveProductItem({
+      const saveRes = store.saveProductItem({
         ...it,
         purchasePriceInput: priceInput,
         status: check.normalized.status,
+        remainingPercent: check.normalized.remainingPercent,
         openedDate: check.normalized.openedDate,
         usedUpDate: check.normalized.usedUpDate,
       });
+      if (!saveRes.ok) {
+        toast(saveRes.error);
+        return;
+      }
       toast(nextStatus === 'in_use' ? '已设为「使用中」并记录有效开封日期' : `已切换为「${ITEM_STATUSES[nextStatus]?.label || nextStatus}」`);
       actions.rerender();
     });
