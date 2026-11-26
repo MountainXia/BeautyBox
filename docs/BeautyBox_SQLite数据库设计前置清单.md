@@ -1,98 +1,95 @@
-# BeautyBox SQLite 数据库设计前置清单
+# 妆匣 BeautyBox SQLite Schema V1 设计前置基线清单（V3.1 完整输入版）
 
-- **文档名称**：BeautyBox SQLite 数据库设计前置清单
-- **版本号**：V1.0
-- **更新时间**：2026-11-26
-- **文档状态**：设计输入清单（**本次不建表、不执行 Migration**；标 `【待用户确认】` 项锁定后方可启动 `V3-04` 建表）
-- **适用阶段**：`V3-04`（原 `TASK 03` SQLite Schema 与迁移框架）前置唯一数据设计输入
-- **相关文档引用**：[ADR-0001](./adr/0001-architecture-decisions.md)、[ADR-0002](./adr/0002-m1-to-m10-product-decisions.md)、[BeautyBox_产品需求规格说明书_V3.0](./BeautyBox_%E4%BA%A7%E5%93%81%E9%9C%80%E6%B1%82%E8%A7%84%E6%A0%BC%E8%AF%B4%E6%98%8E%E4%B9%A6_V3.0.md)、[02_数据库设计_V2.0.docx](./02_%E6%95%B0%E6%8D%AE%E5%BA%93%E8%AE%BE%E8%AE%A1_V2.0.docx)（历史 V2.0 基线保留）
-
-> 结构设计准则：不以“凑齐 20 张表”为 KPI，而以业务职责清晰、外键一致性、约束严密、易于版本化迁移、离线可用及兼顾未来备份同步扩展为最高标准；严禁建立 `users`、`auth`、`owner_id`、RLS 或服务端分享表。
+- **版本**：V3.1（升级自 V1.0 前置清单，2026-11-26）
+- **状态**：**待拍板 `UD-01`～`UD-03` 后即可进入 `V3-04` 正式建表**（`UD-04` 不阻塞建表）
+- **权威依赖**：
+  - [docs/adr/0001-architecture-decisions.md](file:///home/xianggujiang/projects/BeautyBox/docs/adr/0001-architecture-decisions.md)（含第十节 V3.1 适用边界说明）
+  - [docs/adr/0002-m1-to-m10-product-decisions.md](file:///home/xianggujiang/projects/BeautyBox/docs/adr/0002-m1-to-m10-product-decisions.md)
+  - [docs/BeautyBox_产品需求规格说明书_V3.0.md](file:///home/xianggujiang/projects/BeautyBox/docs/BeautyBox_产品需求规格说明书_V3.0.md)
+- **前置边界声明**：**本轮仅提供 Schema 设计输入基线，严禁在用户核准前直接编写 `.sql` 建表 DDL、Migration 代码或 Swift 模型代码。**
 
 ---
 
-## 1. 核心实体清单（按业务域划分，约 19～21 张实表）
+## 一、对 ADR-0001「20 张核心表」的务实重估与实体必要性审查
 
-| 业务域 | 核心表 / 实体 | 职责与说明 |
-|---|---|---|
-| **基础字典** | `categories`、`brands` | 父子级产品分类字典（含稳定 `code` 与默认数量单位）；品牌规范化字典 |
-| **产品与实物** | `products`、`product_items`、`product_photos` | 产品款式主档；用户实际拥有的独立单件（含生命周期、双有效期、美瞳度数）；单封面唯一真相源多图关联 |
-| **专属扩展** | *(待选定 M10 方案)* 如 `contact_lens_profiles` 或主档内嵌 + `specialty_attrs_json` | 承载美瞳更换周期/BC/DIA/含水量，以及香水浓度香调、护肤功效等分类专属参数 |
-| **媒体资产** | `media_assets` | App 私有沙盒文件相对路径、缩略图路径、MIME、宽高、字节数、SHA-256（无 Base64） |
-| **妆容与持妆** | `looks`、`look_photos`、`look_product_items`、`wear_reviews` | 妆容主体（四维可选评分）、完成/局部照、关联单件历史快照、时间节点持妆测评 |
-| **日常与日记** | `product_usage_logs`、`routines`、`routine_steps`、`routine_step_products`、`routine_logs`、`routine_log_items`、`skin_diaries`、`skin_diary_photos` | 单品使用日志、护肤流程模板与执行打卡（含完整快照）、主观肌肤日记及多图关联 |
-| **设置与备份** | `app_settings`、`backup_manifests` | 本地偏好配置（首页币种、外币开关、临期天数等）与备份包清单元数据 |
+`ADR-0001` 第十节已明确：**“20 张核心表”不作为硬性 KPI**。本清单对所有候选实体按真实业务必要性逐一审查（严禁建 `users` / `auth` / `owner_id` / `RLS` 及联网分享表）：
 
-## 2. 核心实体关系（ER）概览
-- `categories(id)` 自关联 `parent_id`（`1:N` 支持一级 → 二级；未来可扩展自定义）。
-- `brands(id)` `1:N` `products(brand_id)`；`categories(id)` `1:N` `products(category_id)` 与 `products(subcategory_id)`。
-- `products(id)` `1:N` `product_items(product_id)`；`products(id)` `1:N` `product_photos(product_id)`。
-- `product_items(id)` `N:M` `looks(id)` 通过 `look_product_items`（保留产品快照，`ON DELETE SET NULL`）。
-- `looks(id)` `1:N` `look_photos`；`looks(id)` `1:N` `wear_reviews`。
-- `product_items(id)` `1:N` `product_usage_logs`；`routines` `1:N` `routine_steps` `N:M` `product_items`（经 `routine_step_products` / `routine_log_items` 快照护航）。
-- `skin_diaries(id)` `1:N` `skin_diary_photos` `N:1` `media_assets`。
+| 编号 | 实体/表名 | 是否必须存在 | 业务职责 | 主要字段（草案） | 与其他实体的关系 | 是否有必要独立成表 | 设计风险与应对 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `categories` | **必须** | 9 一级 / 45 二级 / 91 三级可扩展分类字典与迁移映射锚点 | `id`, `code UNIQUE`, `parent_id`, `level`, `name`, `default_unit`, `allow_direct_product`, `expiry_management_mode`, `has_specialty_attrs`, `specialty_group_code`, `is_system`, `is_active`, `deprecated_by_code`, `sort_order`, `deleted_at` | `1:N` 自引用 `parent_id`；`1:N` 关联 `products` | **必须独立**（支持多级树与外键 `RESTRICT`） | **风险**：硬删或复用 `code` 破坏老品归属。**应对**：强制软废弃 `is_active=0 + deprecated_by_code`，严禁物理删库。 |
+| 2 | `brands` | **必须** | 品牌归一化去重、展示与搜索聚合 | `id`, `name`, `normalized_name UNIQUE`, `created_at`, `updated_at` | `1:N` 关联 `products` | **必须独立**（防止 "YSL"/"圣罗兰" 拼写漂移碎片化） | **风险**：大小写重复。**应对**：`normalized_name` 索引去重；删除品牌时 `products.brand_id` 走 `SET NULL`。 |
+| 3 | `products` | **必须** | 产品主档（跨瓶共享不变特征与命名保护） | `id`, `brand_id`, `category_id`, `name`, `is_custom_name`, `spec_value`, `spec_unit`, `shade`, `category_attrs_schema_ver`, `category_attrs_json`, `notes_private`, `archived_at`, `deleted_at`, `trash_expires_at` | `N:1` `categories`/`brands`；`1:N` `product_items` / `product_photos`；`1:0..1` `product_lens_profiles` | **必须独立**（核心 `Product` vs `ProductItem` 分离基石） | **风险**：JSON 承载过多无索引查询字段。**应对**：高频色号 `shade` 留主列，美瞳核心结构参数独立结构化。 |
+| 4 | `product_lens_profiles` *(V3.1 新增轻量结构)* | **强烈建议**（比全塞 `products` 稀疏列或无约束 JSON 更优） | 承载 `L1_LENS` 产品级结构化光学与周期属性，确保 **`replacement_cycle_code` 为唯一事实来源** | `product_id PK/FK`, `replacement_cycle_code`, `bc_mm`, `dia_mm`, `water_content_percent`, `pack_piece_count`, `lens_color_pattern`, `updated_at` | `1:0..1` 绑定 `products(id)` (`ON DELETE RESTRICT/CONTROLLED`) | **建议独立**（仅美瞳记录存在，0 冗余空列，强 `CHECK` + 索引过滤抛期） | **风险**：如 `UD-02` 选"不同度数拆 `Product`"则左右眼度数亦需跟主档（不推荐）。当前设计完全可控。 |
+| 5 | `product_photos` | **必须** | 产品多图顺序管理与唯一封面图锚点 | `id`, `product_id`, `asset_id`, `sort_order`, `is_cover`, `created_at` | `N:1` `products`；`N:1` `media_assets` | **必须独立**（支撑多图及 `WHERE is_cover=1` 部分唯一索引） | **风险**：出现多封面或孤儿文件。**应对**：数据库部分唯一索引硬防 + 引用计数清理。 |
+| 6 | `product_items` | **必须** | 每瓶/每支/每盒独立实物、价格、获得渠道、4 层日期与生命周期 | `id`, `product_id`, `acquire_channel`, `purchase_price_minor`, `currency_code`, `purchase_date`, `lifecycle_status`, `remaining_percent`, `lifecycle_note`, `manufacture_date`, `unopened_shelf_months`, `packaging_exp_date`, `opened_date`, `pao_months`, `computed_expiry_date`, `computed_expiry_basis`, `confirmed_expiry_date`, `expiry_confirmed_at`, `confirmed_input_fingerprint`, `finished_at`, `last_used_at`, `lens_power_mode`, `left_eye_power`, `right_eye_power`, `archived_at`, `deleted_at`, `trash_expires_at` | `N:1` `products`；被 `look_product_items`、`product_usage_logs`、`routine_*` 引用 | **必须独立**（多瓶多效期核心载体） | **风险**：旧 `idle` 状态残余、取消弹出脏改。**应对**：严格 `CHECK` + 迁移映射 + 事务草稿提交。 |
+| 7 | `media_assets` | **必须** | App 沙盒私有图片元数据统一索引与防删保护 | `id`, `relative_path UNIQUE`, `thumbnail_path`, `media_type`, `mime_type`, `byte_size`, `pixel_width`, `pixel_height`, `sha256`, `created_at`, `updated_at` | 被 `product_photos`、`look_photos`、`wear_reviews`、`skin_diary_photos` 引用 | **必须独立**（实现统一去重、校验与安全 GC） | **风险**：数据库回滚遗留物理图片或误删被共享照片。**应对**：提交后 GC，必须全 4 张引用表 count=0 才删文件。 |
+| 8 | `looks` | **必须** | 妆容日记主记录、时间消耗、预设/手填风格场景及 **4 项全选填自评** | `id`, `name`, `look_date`, `style`, `scene`, `started_at`, `finished_at`, `duration_minutes`, `duration_source`, `cover_asset_id`, `self_rating`, `coordination_rating`, `color_rating`, `wear_rating`, `tags_json`, `notes_private`, `archived_at`, `deleted_at`, `trash_expires_at` | `1:N` `look_photos` / `look_product_items` / `wear_reviews` | **必须独立** | **风险**：空评分存为 0 破坏均分。**应对**：4 个 rating 全部 `INTEGER NULL CHECK (rating BETWEEN 1 AND 5)`，均值查询 `AVG(col)`。 |
+| 9 | `look_photos` | **必须** | 妆容主图与多细节图有序关联 | `id`, `look_id`, `asset_id`, `photo_role`, `captured_at`, `sort_order`, `created_at` | `N:1` `looks` & `media_assets` | **必须独立**（支持多张细节照与角色区分） | **风险**：与 `looks.cover_asset_id` 失步。**应对**：Schema V1 建议同步参照 `product_photos` 收敛 `is_cover` 或严格在单事务维护。 |
+| 10 | `look_product_items` | **必须** | 妆容实际使用单品关联及**不可变产品历史快照** | `id`, `look_id`, `product_item_id NULL`, `step_key`, `step_order`, `product_name_snapshot`, `brand_name_snapshot`, `shade_snapshot`, `category_snapshot`, `spec_snapshot`, `created_at` | `N:1` `looks` (`RESTRICT`)；`N:1` `product_items` (**`ON DELETE SET NULL`**) | **必须独立**（N:M 关系与防删保快照核心） | **风险**：写错成 `CASCADE` 会随删产品把历史妆容清空。**应对**：硬编码 `ON DELETE SET NULL` 并写专项单测验收。 |
+| 11 | `wear_reviews` | **必须** | 持妆时间线记录（2/4/6/8h 或自定义节点表现） | `id`, `look_id`, `asset_id NULL`, `captured_at`, `wear_minutes`, `wear_minutes_source`, `timepoint_key`, `overall_rating`, `smudge_level`, `oxidation_level`, `makeup_loss_level`, `oil_level`, `caking_level`, `floating_level`, `patchiness_level`, `notes_private`, `created_at`, `updated_at` | `N:1` `looks`；`N:1` `media_assets` (`SET NULL`) | **必须独立**（一个妆容对应多时间点持妆跟踪） | **风险**：主观指标枚举随手改。**应对**：评分与等级加 `CHECK` 范围约束。 |
+| 12 | `product_usage_logs` | **必须** | 日常单品使用记录（含**美瞳实际佩戴天数/次跟踪**） | `id`, `product_item_id`, `used_at`, `wear_count_delta`, `scene`, `feeling`, `notes_private`, `created_at`, `updated_at` | `N:1` `product_items` (`RESTRICT`) | **必须独立**（高频流水日志不可塞回主表） | **风险**：删除实物后历史流水约束。**应对**：有流水引导归档/回收站，彻删时显式确认或按规则清理。 |
+| 13 | `skin_diaries` | **必须** | 日常主观肌肤状况日记（非医疗诊断） | `id`, `diary_date`, `mood_tags_json`, `notes_private`, `created_at`, `updated_at` | `1:N` `skin_diary_photos` | **必须独立** | 无显著风险，字段稳定。 |
+| 14 | `skin_diary_photos` | **必须** | 肌肤日记多图关联 | `id`, `skin_diary_id`, `asset_id`, `sort_order`, `created_at` | `N:1` `skin_diaries` & `media_assets` | **必须独立**（与多图设计保持一致） | 同 `product_photos` 需配合 GC 清理。 |
+| 15～19 | `routines` / `routine_steps` / `routine_step_products` / `routine_logs` / `routine_log_items`（5张） | **按路线图保留（V1 Schema 一次性预置，UI 在 V3-12 接入）** | 早晚/每周护肤步骤模板、步骤关联品快照与历史执行打卡记录 | 继承 `ADR-0001` 第 4.4 节补全快照字段（`product/brand/shade/category_snapshot`） | 级联流程树与历史快照 | **必要独立**（流程模板 `≠` 每日打卡，历史改步不破坏旧打卡） | **风险**：5 张表工作量偏后置。**应对**：在 `V3-04` 一次性稳态建表，不急于在产品页 UI 提前暴露。 |
+| 20 | `app_settings` | **必须** | 离线应用级偏好设置（主展示币种 `primary_display_currency`、临期提醒阈值 `expiring_threshold_days`、iCloud 开关状态等） | `key PK`, `value_json`, `updated_at` | 全局 KV | **必须独立** | **风险**：强依赖隐式默认值。**应对**：Repository 读不到 key 时给安全类型化默认值（如 `CNY`, `30`）。 |
+| 21 | `backup_manifests` | **必须** | `.beautyboxbackup` 备份审计、Schema 版本比对与完整性校验追踪 | `id`, `backup_format_version`, `schema_version`, `created_at`, `app_version`, `database_sha256`, `media_count`, `total_bytes`, `destination_kind`, `status` | 独立备份记录 | **必须独立**（遵循 `ADR-0001` 第 4.5 节） | 无显著风险。 |
 
-## 3. `Product` 与 `ProductItem` 职责边界
-| 归属实体 | 应存字段（示例） | 理由 |
-|---|---|---|
-| **`Product`（产品款式）** | 分类（一级+二级）、品牌、自定义名 `custom_name` + `is_custom_name` + 展示名 `name`、单件规格（值/单位/自定义单位）、数量单位 `quantity_unit`、彩妆通用色号/质地/妆效、美瞳花纹/系列/BC/DIA/含水量/默认周期、`expiry_tracking_enabled`、产品基础备注、产品回收站字段 `deleted_at`/`purge_at` | 同一款产品共享的品类归属、物理配方属性与产品库展示信息 |
-| **`ProductItem`（实物单件）** | 所属 `product_id`、生命周期状态 `status`、`remaining_percent`、购入价格 `purchase_price_minor` + `currency_code`、购买日期、获得方式（预设+自定义）、生产日期、未开封保质期月数、开封日期、用完日期 `used_up_date`、PAO 月数、未开封/开封后双推算到期日、最终推算日与依据、用户确认到期日/确认时间/重确认标记、单件级美瞳左/右眼度数（`left_eye_power` / `right_eye_power`）、`last_used_at`、`deleted_at` | 同款多次购入、不同开封时间、不同批次效期、不同价格渠道、不同美瞳左右眼度数彼此完全独立 |
+> **表数量真实评估结论**：当前业务天然需要 **21 张本地核心表**（原 `ADR-0001` 20 张 + `product_lens_profiles` 1 张轻量结构表，具体随 `UD-02` 最终拍板可定为 20 或 21 张；回收站无需额外建表，通过 `deleted_at`/`trash_expires_at` 就地实现）。严格证明：**表结构由真实业务驱动，不迎合数字指标，也不滥用 EAV 或无约束 JSON。**
 
-## 4. 产品分类字典设计输入（M4 · `【待用户确认】`）
-- `categories` 关键列：`id` (UUID PK)、`code` (TEXT UNIQUE NOT NULL，稳定底层编码如 `contact_lenses`, `lens_monthly`)、`parent_id` (FK nullable → `categories(id)` `RESTRICT`)、`name` (展示名，可随本地化或温和调整更新)、`default_quantity_unit` (TEXT NULL，仅二级必填如 `瓶`/`支`/`副`/`盒`/`把`)、`sort_order`、`is_system` (`1` 系统预设 / `0` 未来自定义)、`created_at`、`updated_at`、`deleted_at`。
-- **迁移保障**：因为 `products` 引用 `categories.id` 且字典具有稳定 `code`，调整分类中文名或映射旧原型 6 大类到新 9 大类时，不会破坏历史产品与快照关联。
+---
 
-## 5. 美瞳及其更换周期属性（M4 / M6 / M9 / M10 · `【待用户确认】`）
-- **一级分类**：`contact_lenses`（「美瞳」）。
-- **二级分类**（浏览筛选）：`lens_daily`（日抛）、`lens_monthly`（月抛）、`lens_half_year`（半年抛）、`lens_yearly`（年抛）、`lens_other`（其他周期）。
-- **结构化周期字段**：`replacement_cycle_code`（`daily`/`monthly`/`half_year`/`yearly`/`biweekly`/`quarterly`/`custom`）与 `replacement_days`（INTEGER NULL，可空正整数天数），新建/改分类时与 `subcategory_id` 自动同步一致。
-- **左右眼度数与包装**：
-  - 支持同款不同盒购买不同度数，故 `left_eye_power`、`right_eye_power`（TEXT NULL，如 `"-2.50"`、`"-0.00"`，保留小数精度）挂在 `product_items`（或对应扩展关联）；
-  - 美瞳参数 `series_name`、`pattern_color`、`base_curve_mm`、`diameter_mm`、`graphic_dia_mm`、`water_content_percent`、`packaging_type`、`pack_count` 全部 **允许 `NULL` 选填**。
+## 二、SQLite Schema V1 二十项完整前置设计输入
 
-## 6. 通用字段与分类专属属性存储前置决定（M10 · `【待用户确认】`）
-- **M10 方案选型（见 `ADR-0002` §M10-3）**：推荐采用 **方案 C 务实混合**：
-  - 高频共有字段直接驻留 `products`（不再保留旧 `docs/02` 中的 `products.cover_asset_id`！）；
-  - 美瞳强业务参数（周期、BC/DIA/含水量、单件左右眼度数）采用结构化列/子表保障类型安全与索引；
-  - 香水（浓度、香调、前中后调）、护肤（适用肤质、功效、核心成分）等低频延伸属性放入 `products.specialty_attrs_json`（或专用只读结构映射），V1 禁止建通用 EAV 三元组大表。
+对照规划目标，逐项固化 20 项设计边界与规范如下：
 
-## 7. 生命周期与有效期状态数据设计输入（M2 / M6 / M9）
-- **`product_items.status`**：`CHECK (status IN ('unrecorded', 'unopened', 'in_use', 'idle', 'used_up', 'disposed', 'transferred'))`（其中前端日常流转面向前 4 态，详见 `ADR-0002` M2/M9）。
-- **有效期计算状态独立**：数据库不单独设静态 `expired` 列覆写 `status`——有效期状态（`normal` / `near_expiry` / `expired` / `unknown`）由领域层根据 `today`、用户设置的 `near_expiry_days` 及 `COALESCE(confirmed_expiry_date, status_specific_computed_expiry)` 实时计算，确保随自然日推进永不过时。
-- **单件完整性判断输入**：Repository / Domain 联合读取 `product_items` 与 `products.expiry_tracking_enabled`，按 `status` 区分缺失字段（`unrecorded` → 待记录状态；`unopened` → 查 `manufacture_date` & `unopened_shelf_months`；`in_use` → 查 `opened_date` & `pao_months`；`used_up` 或豁免工具类 → 不进入有效期待完善）。
+1. **核心实体清单**：见第一节完整 21 实体审查表（归属本地个人档案、美妆物品、美瞳结构、妆容持妆、日常、配置与备份七大域）。
+2. **实体之间的关系**：`Category (1:N self) → Category (1:N) → Product ← (N:1) Brand`；`Product (1:0..1) → ProductLensProfile`；`Product (1:N) → ProductItem` & `ProductPhoto`；`ProductItem (N:M via LookProductItem) ↔ Look`；`Look (1:N) → LookPhoto / WearReview`；`ProductItem (1:N) → ProductUsageLog`；`Routine (1:N) → RoutineStep (1:N) → RoutineStepProduct` 及 `RoutineLog` / `RoutineLogItem`；所有照片关联表多对一指向 `MediaAsset`。
+3. **Product 与 ProductItem 边界**：
+   - `Product` 管本质共性（名称与 `is_custom_name`、品牌、三级分类、单件标称规格、色号、分类专业属性、美瞳换抛周期与光学参数、主档图组）。
+   - `ProductItem` 管物理个体差异（获得渠道、实付价格最小单位+币种、购买日期、4 层生命周期日期、使用状态、剩余比例、开封/用完日、美瞳各盒左右眼度数）。
+4. **分类树结构**：采用 `parent_id + level` 自引用邻接表；不死锁三层上限；`allow_direct_product` 精确控制哪些二级叶子可直选。
+5. **分类稳定编码**：采用不可变稳定字符串业务编码 `categories.code`（如 `L1_MAKEUP`、`L3_MK_BASE_FOUNDATION`、`L2_LN_COSMETIC`）配合 `UNIQUE` 索引；迁移与代码引用优先绑定 `code` 而非脆性中文名称或随机 UUID。
+6. **分类迁移策略**：完整遵循 `ADR-0002` 第 5.4.3 节全映射表；对 `store.js`/`seedData.js`/`c1-mock-data.js` 全量 24+ 子类建立 `code -> new code` 确定映射；未知或仅一级历史记录迁入对应大类兜底叶子并写 `notes_private` 溯源，**绝对禁止静默丢弃**；`sub-lipbalm` 按是否有 `shade` 分流护理润唇膏与有色润唇膏。
+7. **通用字段清单**：全表统一使用 UUID TEXT PK；创建/更新时间采用 `ISO-8601 UTC` TEXT；纯业务日期（生产/购买/开封/EXP/到期/妆容日期）采用 `YYYY-MM-DD` TEXT，禁止带时区时间戳混入引发跨日偏移。
+8. **分类专属属性清单**：
+   - `shade` 留作 `products` 高频可空列；
+   - 美瞳主档属性入 `product_lens_profiles`（`replacement_cycle_code` 单源 + `bc_mm`、`dia_mm`、`water_content_percent`、`pack_piece_count`、`lens_color_pattern`），每盒度数（`lens_power_mode`、`left_eye_power`、`right_eye_power`）入 `product_items`（`UD-02` 方案）；
+   - 香水浓度/香调、彩妆质地/妆效、护肤肤质/功效/SPF 入带版本标识 `category_attrs_schema_ver` 的 `products.category_attrs_json`，由 Swift 强类型 `Codable` 分组解析，**严禁建通用 EAV 表**。
+9. **生命周期状态字段**：
+   - `lifecycle_status` `CHECK (lifecycle_status IN ('unrecorded', 'unopened', 'in_use', 'finished'))`，默认值 `'unrecorded'`；
+   - `remaining_percent` `INTEGER NULL CHECK (remaining_percent IS NULL OR (remaining_percent BETWEEN 0 AND 100))`（`unrecorded` 存 `NULL`、`finished` 存 `0`）；
+   - `idle` 旧枚举迁移至 `in_use` 并追加备注 `"[迁移保留] 原状态：闲置"`。
+10. **有效期来源与计算规则**：
+    - 物理隔离 4 层字段：`raw_input`（`manufacture_date`、`unopened_shelf_months`、`packaging_exp_date`、`opened_date`、`pao_months`、`replacement_cycle_code`）→ `system_computed`（`computed_expiry_date` + `computed_expiry_basis`）→ `user_confirmed`（`confirmed_expiry_date` + `expiry_confirmed_at` + `confirmed_input_fingerprint`）→ 运行时派生 `effective_expiry_date`；
+    - 强制校验：`opened_date IS NULL OR manufacture_date IS NULL OR opened_date >= manufacture_date`；
+    - 计算函数按 `min(未开封截止日, 开封日期 + PAO/美瞳更换周期)` 执行，绝不无依据按品类猜保质期；重置为未记录时精准清空开封/用完/确认/推算字段但保留原始生产与保质期参数。
+11. **妆容与产品多对多关系**：通过 `look_product_items` 实现一妆对多件实物、一件实物入多套妆容；允许按 `step_key` / `step_order` 记录上妆部位顺序。
+12. **历史快照规则**：`look_product_items`、`routine_step_products`、`routine_log_items` 一律存 `product_name_snapshot`、`brand_name_snapshot`、`shade_snapshot`、`category_snapshot`、`spec_snapshot`；`product_item_id` 一律可空。
+13. **删除与回收站规则**（待 `UD-03` 拍板）：
+    - 推荐在 `products`、`product_items`、`looks` 上统一增加 `deleted_at TEXT NULL` 与 `trash_expires_at TEXT NULL`；常规查询视图/Repository 过滤 `deleted_at IS NULL`；恢复按原 UUID 置空双字段且**不强制合并同款新品**；彻删或期满清理走单事务有序解绑与快照保底。
+14. **照片文件和引用关系**：数据库只存相对路径与 SHA256/尺寸元数据（严禁 Base64）；`product_photos` 通过部分唯一索引限制单产品至多 1 张 `is_cover = 1`；删除后先提交事务再查 `media_assets` 四表引用总和，仅当全为 `0` 时调用 `MediaStore` 清理沙盒原图与缩略图。
+15. **货币存储规则**：`purchase_price_minor INTEGER NULL CHECK (purchase_price_minor IS NULL OR purchase_price_minor >= 0)` + `currency_code TEXT NOT NULL DEFAULT 'CNY'`；配套离线币种精度字典表/常量（`CNY=2`, `USD=2`, `JPY=0`, `KWD=3`）；查询汇总必须 `GROUP BY currency_code`，**禁止不同币种在 SQL 中直接 `SUM(purchase_price_minor)` 跨越相加**。
+16. **唯一约束与索引建议**：
+    - `categories(code)` UNIQUE、`brands(normalized_name)` UNIQUE、`media_assets(relative_path)` UNIQUE；
+    - `product_photos(product_id) WHERE is_cover = 1` 部分唯一索引 + `(product_id, asset_id)` UNIQUE；
+    - 业务查询高频索引：`products(category_id, deleted_at, archived_at)`、`product_items(product_id, deleted_at, lifecycle_status)`、`product_items(confirmed_expiry_date, computed_expiry_date)`、`product_lens_profiles(replacement_cycle_code)`、`looks(look_date, deleted_at)`、`look_product_items(look_id, step_order)`、`product_usage_logs(product_item_id, used_at)`。
+17. **外键删除策略**：全面沿用 `ADR-0001` 第 4.6 节矩阵——**历史保留链全部 `ON DELETE SET NULL`**（`look_product_items.product_item_id`、`routine_*_products.product_item_id`、`products.brand_id`、`wear_reviews.asset_id`），**引用保护链全部 `ON DELETE RESTRICT`**（`categories`、`products→product_items`、`product_photos`、`look_photos`、`skin_diary_photos`），严禁无保护 `CASCADE` 误清用户长期数据。
+18. **数据迁移策略**：`PRAGMA foreign_keys = ON` + `PRAGMA user_version` 版本递进事务脚本；含结构迁移（1→2→3 升级）与历史原型 JSON 导入映射器（处理旧 6+24 分类编码、`idle` 状态迁移、`is_custom_name` 初始赋值与 `currency` -> `currency_code` 字段对齐）。
+19. **备份和恢复兼容性**：`.beautyboxbackup` 压缩包（`manifest.json` 含 `schema_version` / `backup_format_version` / `database_checksum` + `database.sqlite` + `Media/` + `checksums.json`）；恢复前本地建安全点、验 SHA256 与空间，旧版备份经版本迁移器逐级升级后挂载，**拒绝降级损坏包**；免费用户永久可用。
+20. **测试用例及边界条件（`V3-04` 必测验收门槛）**：
+    - 空库建表 + 种子分类 145 节点初始化 + 全量 24+ 旧分类与 `idle` 数据迁移回归测试；
+    - `ON DELETE RESTRICT` 拦截与 `ON DELETE SET NULL` 删后妆容历史快照完整留存测试；
+    - `product_photos` 并发双封面拒绝 + 无封面兜底首图查询测试；
+    - 日期合法性 `CHECK`（`opened_date < manufacture_date` 拦截）、`min()` 双算、美瞳未开封 EXP 与日抛/月抛分离、独立重置保留 `manufacture_date` 与历史记录测试；
+    - 4 项 `looks` 评分为 `NULL` 排除在 `AVG()` 外（对比误填 `0` 的回归验证）；
+    - 多币种精度往返一致性（`CNY`/`USD` 2位、`JPY` 0位、`KWD` 3位、超精度拦截、跨币种禁止混加）；
+    - 照片引用计数 GC 边界（同一图片被产品和妆容共享时，删产品不得误删沙盒物理文件）。
 
-## 8. 妆容记录及产品关联（M7）
-- `looks`：`id`、`name` (NOT NULL)、`look_date` (YYYY-MM-DD NOT NULL)、`style` (TEXT NULL)、`scene` (TEXT NULL)、`duration_minutes` (INTEGER NULL `CHECK >= 0`)、`cover_asset_id` (FK → `media_assets.id` `SET NULL`)、`self_rating` / `coordination_rating` / `color_rating` / `wear_rating` (**四维全部允许 `NULL`，`CHECK (col IS NULL OR (col BETWEEN 1 AND 5))`**)、`tags_json`、`notes_private`、`deleted_at`、`purge_at`、`created_at`、`updated_at`。
-- `look_photos`：支持多张完成照/局部照（`photo_role IN ('finished', 'detail')`、`sort_order`）。
-- `look_product_items`：`product_item_id` (FK nullable `ON DELETE SET NULL`) + 4 项快照字段（`product_name_snapshot`, `brand_name_snapshot`, `shade_snapshot`, `category_snapshot`）+ `step_key`、`step_order`。
+---
 
-## 9. 图片与文件存储关系（遵守 ADR-0001 §4.2–4.3）
-- **`products` 不存 `cover_asset_id`**：以 `product_photos.is_cover` 为唯一封面真相源（部分唯一索引 `UNIQUE(product_id) WHERE is_cover = 1`）。
-- **多图覆盖范围**：`product_photos`、`look_photos`、`wear_reviews.asset_id`、`skin_diary_photos`（覆盖 `ADR-0001` 补充表）。
-- **`media_assets`**：仅存 `relative_path`、`thumbnail_path`、`mime_type`、`byte_size`、`pixel_width`、`pixel_height`、`sha256`（全部物理文件设 `isExcludedFromBackup = true`，需 Mac/Xcode 实测）。
+## 三、启动 `V3-04`（正式 SQLite Schema V1 建表）准入检查门
 
-## 10. 删除、恢复与历史记录保留规则（M3 / M9）
-- **7 天回收站（推荐待确认）**：`products` 与 `looks` 设 `deleted_at`、`purge_at`（`product_items` 设 `deleted_at`）。回收恢复凭 `UUID` 清空 `deleted_at`/`purge_at`，严禁合并覆写同款新品。
-- **重置为未记录（M9-4 `推荐待确认`）**：仅清除生命周期态字段，严禁删除主档、购买信息、使用日志及妆容关联。
-- **外键保护矩阵**：严禁 `ON DELETE CASCADE` 破坏快照；`products`/`product_items` 对快照关联全部采用 `ON DELETE SET NULL`（与已确认外键矩阵一致）；有未清理子项时底层用 `RESTRICT` 防止孤儿。
-
-## 11. 金额、货币、时间与日期约束（M6 / M8 / M9）
-- **金额**：`purchase_price_minor INTEGER NULL CHECK (purchase_price_minor IS NULL OR purchase_price_minor >= 0)` + `currency_code TEXT NULL`；金额与币种成对校验，绝对不用 `REAL`/`FLOAT`。
-- **日期时间**：纯日期（`YYYY-MM-DD`）用于生产/购买/开封/用完/到期日/妆容日/日记日；时间戳（ISO-8601 UTC）用于 `created_at`、`updated_at`、`deleted_at`、`purge_at`、`expiry_confirmed_at`、`captured_at`。
-- **核心数据库 / 仓储级一致性约束**：
-  1. `remaining_percent BETWEEN 0 AND 100`；
-  2. `unopened_shelf_months IS NULL OR unopened_shelf_months > 0`；`pao_months IS NULL OR pao_months > 0`；
-  3. `opened_date IS NULL OR manufacture_date IS NULL OR opened_date >= manufacture_date`；
-  4. `used_up_date IS NULL OR ( (manufacture_date IS NULL OR used_up_date >= manufacture_date) AND (opened_date IS NULL OR used_up_date >= opened_date) )`；
-  5. `status = 'unrecorded'` 时不允许正常路径带 `opened_date`（`CHECK` 或导入隔离）；`status = 'unopened'` 时 `opened_date IS NULL AND remaining_percent = 100`；`status = 'used_up'` 时 `remaining_percent = 0`；`status = 'in_use'` 时 `opened_date IS NOT NULL`。
-
-## 12. 迁移与后续扩展要求
-- 使用 `PRAGMA user_version` + GRDB `DatabaseMigrator` 严格在事务内执行单向迁移；`backup_manifests` 同步存储 `schema_version`。
-- 由于 SQLite 不支持直接 `ALTER` 修改 `CHECK` 约束，所有关键 `CHECK`（如 `unrecorded`、四维可空星级、美瞳参数边界、日期顺序约束）必须在 `001_initial_schema.sql` 建表时一次就位。
-
-## 13. 尚未确定、须在编写 DDL 前拍板的数据库决策清单
-1. **【待确认】M4**：最终采用 9 大一级分类及所附 47 个二级分类清单中是否有需合并、拆分或改名项？
-2. **【待确认】M10**：美瞳周期/参数及分类专属属性最终选「混合方案 C」（美瞳结构化字段 + 中低频 JSON）、「纯方案 B」（全 JSON），还是「纯方案 C」（各分类建专表）？工具类是否确定加入 `expiry_tracking_enabled`？
-3. **【待确认】M9**：`status = 'unrecorded'` 重置入口的清理范围（保留生产日期与保质期？）、`in_use → unopened` 对原确认到期日的处理、`status = 'in_use' CHECK (opened_date IS NOT NULL)` 是否放宽导入历史数据？
-4. **【待确认】M3 / M2**：是否确认引入 `deleted_at`/`purge_at` 7 天回收站机制，以及 `idle` 历史态是否保留进 `CHECK` 约束？
-5. **【待确认】M7**：`looks` 4 维评分全可选 + `1–5` 整数（无半星）是否最终确定？
+必须全部满足以下条件后方能启动 `V3-04` 编码：
+1. 用户已对 **`UD-01`（分类全树核准）**、**`UD-02`（美瞳度数归属）**、**`UD-03`（7 天回收站开关）** 给出明确拍板结论（`UD-04` 首页币种展示可并行或延后，不阻塞建表）；
+2. `V3-03` 已在工作流中确认原型隔离基线与历史备份 Tag 无污染；
+3. SQLite DDL、种子迁移器及约束自动化验证套件计划在当前 Linux 环境使用 `sqlite3 3.45.1` + `python3` 本机跑通全部 20 项边界用例（真机 GRDB SPM 编译标记为“需 Mac/Xcode 实测”）。
