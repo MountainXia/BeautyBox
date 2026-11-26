@@ -3,7 +3,7 @@
  * 完全独立于正式 store.js / seedData.js，不读写正式 localStorage（beautybox_prototype_v1）。
  */
 
-import { deriveDualComputedExpiry, expiryStatus, resolveExpiry, todayStr } from './expiry.js';
+import { deriveDualComputedExpiry, expiryStatus, todayStr } from './expiry.js';
 import { CURRENCIES, formatMinor } from './currency.js';
 
 /** 可扩展的一级 / 二级分类字典与默认数量单位 */
@@ -132,6 +132,94 @@ export function formatSpecDisplay({ value = '', unit = '', customUnit = '' }) {
 }
 
 /**
+ * 校验单瓶是否存在状态与生命周期日期冲突（例如状态为未记录却保留开封日期）
+ */
+export function detectC1ItemDataConflict(item) {
+  if (!item) return { hasConflict: false, message: '' };
+  const hasOpened = String(item.openedDate || '').trim() !== '';
+  if (item.status === 'unrecorded' && hasOpened) {
+    return {
+      hasConflict: true,
+      message: '数据校验异常：使用状态为「未记录」，却存在开封日期，请核对使用状态。',
+    };
+  }
+  if (item.status === 'unopened' && hasOpened) {
+    return {
+      hasConflict: true,
+      message: '数据校验异常：使用状态为「未开封」，却存在开封日期。',
+    };
+  }
+  return { hasConflict: false, message: '' };
+}
+
+/**
+ * 独立判断单瓶的「待记录使用状态」与「有效期信息待完善」归属，确保两者互斥、不重复统计：
+ * - 待记录使用状态：仅当使用状态为 unrecorded 且不存在开封日期冲突时进入
+ * - 有效期信息待完善：仅当使用状态已明确（未开封或使用中）且既无用户确认到期日也无法按对应公式推算时进入
+ * - 已用完（used_up）不进入以上任一分类
+ */
+export function getC1ItemExpiryCompleteness(item) {
+  const status = item?.status || 'unrecorded';
+  const conflict = detectC1ItemDataConflict(item);
+  const isPendingStatus = status === 'unrecorded' && !conflict.hasConflict;
+
+  if (status === 'used_up' || status === 'unrecorded' || conflict.hasConflict) {
+    return {
+      status,
+      isPendingStatus,
+      isIncompleteExpiry: false,
+      isComplete: status !== 'unrecorded' && !conflict.hasConflict,
+      missingReason: '',
+      conflict,
+    };
+  }
+
+  const resolved = resolveC1ItemExpiryForDisplay(item);
+  if (resolved.date) {
+    return {
+      status,
+      isPendingStatus: false,
+      isIncompleteExpiry: false,
+      isComplete: true,
+      missingReason: '',
+      conflict,
+    };
+  }
+
+  let missingReason = '缺少到期信息（可补充或直接填写确认到期日）';
+  if (status === 'unopened') {
+    const hasMfg = Boolean(String(item?.manufactureDate || '').trim());
+    const hasShelf = Boolean(item?.unopenedShelfMonths);
+    if (!hasMfg && !hasShelf) {
+      missingReason = '缺生产日期与未开封保质期（或直接确认到期日）';
+    } else if (!hasMfg) {
+      missingReason = '缺生产日期（或直接确认到期日）';
+    } else if (!hasShelf) {
+      missingReason = '缺未开封保质期（或直接确认到期日）';
+    }
+  } else if (status === 'in_use') {
+    const hasOpened = Boolean(String(item?.openedDate || '').trim());
+    const hasPao = Boolean(item?.paoMonths);
+    if (!hasOpened && !hasPao) {
+      missingReason = '缺开封日期与 PAO（或直接确认到期日）';
+    } else if (!hasPao) {
+      missingReason = '缺 PAO 期限（或直接确认到期日）';
+    } else if (!hasOpened) {
+      missingReason = '缺开封日期（或直接确认到期日）';
+    }
+  }
+
+  return {
+    status,
+    isPendingStatus: false,
+    isIncompleteExpiry: true,
+    isComplete: false,
+    missingReason,
+    conflict,
+  };
+}
+
+/**
  * 按最新数量统计口径聚合单个产品的实时件数：
  * - 未记录 / 未开封 / 使用中 -> 计入当前拥有数量
  * - 已用完 -> 不计入当前拥有数量，计入历史用完
@@ -145,6 +233,9 @@ export function summarizeProductCounts(product, items, { today = todayStr(), nea
   let inUseCount = 0;
   let unopenedCount = 0;
   let unrecordedCount = 0;
+  let pendingStatusCount = 0;
+  let incompleteExpiryCount = 0;
+  let conflictCount = 0;
   let nearExpiryCount = 0;
   let expiredCount = 0;
 
@@ -152,6 +243,11 @@ export function summarizeProductCounts(product, items, { today = todayStr(), nea
     if (item.status === 'in_use') inUseCount += 1;
     else if (item.status === 'unopened') unopenedCount += 1;
     else if (item.status === 'unrecorded') unrecordedCount += 1;
+
+    const comp = getC1ItemExpiryCompleteness(item);
+    if (comp.conflict.hasConflict) conflictCount += 1;
+    if (comp.isPendingStatus) pendingStatusCount += 1;
+    if (comp.isIncompleteExpiry) incompleteExpiryCount += 1;
 
     const resolved = resolveC1ItemExpiryForDisplay(item);
     const st = expiryStatus(resolved, today, nearDays);
@@ -164,6 +260,9 @@ export function summarizeProductCounts(product, items, { today = todayStr(), nea
     inUseCount,
     unopenedCount,
     unrecordedCount,
+    pendingStatusCount,
+    incompleteExpiryCount,
+    conflictCount,
     usedUpCount: usedUpItems.length,
     nearExpiryCount,
     expiredCount,
@@ -177,7 +276,9 @@ export const C1_STATUS_FILTER_META = Object.freeze({
   all: { key: 'all', label: '当前拥有' },
   in_use: { key: 'in_use', label: '使用中' },
   unopened: { key: 'unopened', label: '未开封' },
-  unrecorded: { key: 'unrecorded', label: '待补充信息' },
+  pending: { key: 'pending', label: '待补充信息' },
+  pending_status: { key: 'pending_status', label: '待记录使用状态' },
+  incomplete_expiry: { key: 'incomplete_expiry', label: '有效期信息待完善' },
   near: { key: 'near', label: '临期/过期' },
   used_up: { key: 'used_up', label: '已用完记录' },
 });
@@ -195,7 +296,13 @@ export function filterC1ProductItems(product, items, filterKey = 'all', { today 
     const isHeld = Boolean(C1_ITEM_STATUSES[item.status]?.held);
     if (!isHeld) return false;
     if (key === 'all') return true;
-    if (key === 'in_use' || key === 'unopened' || key === 'unrecorded') return item.status === key;
+    if (key === 'in_use' || key === 'unopened') return item.status === key;
+    if (key === 'pending_status') return getC1ItemExpiryCompleteness(item).isPendingStatus;
+    if (key === 'incomplete_expiry') return getC1ItemExpiryCompleteness(item).isIncompleteExpiry;
+    if (key === 'pending') {
+      const comp = getC1ItemExpiryCompleteness(item);
+      return comp.isPendingStatus || comp.isIncompleteExpiry;
+    }
     if (key === 'near') {
       const exp = expiryStatus(resolveC1ItemExpiryForDisplay(item), today, nearDays);
       return exp.key === 'near' || exp.key === 'expired';
@@ -206,15 +313,27 @@ export function filterC1ProductItems(product, items, filterKey = 'all', { today 
   let matchedInUseCount = 0;
   let matchedUnopenedCount = 0;
   let matchedUnrecordedCount = 0;
+  let matchedPendingStatusCount = 0;
+  let matchedIncompleteExpiryCount = 0;
   let matchedUsedUpCount = 0;
   let matchedExpiredCount = 0;
   let matchedNearCount = 0;
+  const matchedMissingReasons = [];
 
   for (const item of matchedItems) {
     if (item.status === 'in_use') matchedInUseCount += 1;
     else if (item.status === 'unopened') matchedUnopenedCount += 1;
     else if (item.status === 'unrecorded') matchedUnrecordedCount += 1;
     else if (item.status === 'used_up') matchedUsedUpCount += 1;
+
+    const comp = getC1ItemExpiryCompleteness(item);
+    if (comp.isPendingStatus) matchedPendingStatusCount += 1;
+    if (comp.isIncompleteExpiry) {
+      matchedIncompleteExpiryCount += 1;
+      if (comp.missingReason && !matchedMissingReasons.includes(comp.missingReason)) {
+        matchedMissingReasons.push(comp.missingReason);
+      }
+    }
 
     if (item.status !== 'used_up') {
       const exp = expiryStatus(resolveC1ItemExpiryForDisplay(item), today, nearDays);
@@ -230,6 +349,9 @@ export function filterC1ProductItems(product, items, filterKey = 'all', { today 
     matchedInUseCount,
     matchedUnopenedCount,
     matchedUnrecordedCount,
+    matchedPendingStatusCount,
+    matchedIncompleteExpiryCount,
+    matchedMissingReasons,
     matchedUsedUpCount,
     matchedExpiredCount,
     matchedNearCount,
@@ -345,6 +467,7 @@ export function createC1InitialState() {
       manufactureDate: offsetDate(-520),
       unopenedShelfMonths: 36,
       openedDate: offsetDate(-380),
+      usedUpDate: offsetDate(-15),
       paoMonths: 12,
       confirmedExpiryDate: offsetDate(-15),
       remainingPercent: 0,
@@ -432,6 +555,54 @@ export function describeC1ItemDualExpiry(item) {
   return deriveDualComputedExpiry(item);
 }
 
+function parseIsoUtc(isoDate) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate || '').trim());
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const d = Number(m[3]);
+  const ms = Date.UTC(y, mo, d);
+  const dt = new Date(ms);
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo || dt.getUTCDate() !== d) return null;
+  return { y, mo, d, ms };
+}
+
+/**
+ * 计算从开封日期到用完日期的使用时长（日历月+天，同时给出总天数）
+ */
+export function formatC1UsageDuration(openedDate, usedUpDate) {
+  if (!openedDate || !usedUpDate) {
+    return { valid: false, days: null, text: '', error: '' };
+  }
+  const start = parseIsoUtc(openedDate);
+  const end = parseIsoUtc(usedUpDate);
+  if (!start || !end) {
+    return { valid: false, days: null, text: '', error: '日期格式无效' };
+  }
+  const diffDays = Math.round((end.ms - start.ms) / 86400000);
+  if (diffDays < 0) {
+    return { valid: false, days: diffDays, text: '', error: '用完日期不能早于开封日期' };
+  }
+  if (diffDays === 0) {
+    return { valid: true, days: 0, text: '0 天（开封当天用完）', error: '' };
+  }
+  if (diffDays < 30) {
+    return { valid: true, days: diffDays, text: `${diffDays} 天`, error: '' };
+  }
+
+  let months = (end.y - start.y) * 12 + (end.mo - start.mo);
+  let anchorMs = Date.UTC(start.y, start.mo + months, Math.min(start.d, new Date(Date.UTC(start.y, start.mo + months + 1, 0)).getUTCDate()));
+  if (anchorMs > end.ms) {
+    months -= 1;
+    anchorMs = Date.UTC(start.y, start.mo + months, Math.min(start.d, new Date(Date.UTC(start.y, start.mo + months + 1, 0)).getUTCDate()));
+  }
+  const remDays = Math.round((end.ms - anchorMs) / 86400000);
+  const spanLabel = months > 0
+    ? (remDays > 0 ? `${months} 个月 ${remDays} 天（共 ${diffDays} 天）` : `${months} 个月（共 ${diffDays} 天）`)
+    : `${diffDays} 天`;
+  return { valid: true, days: diffDays, text: spanLabel, error: '' };
+}
+
 /**
  * 解析当前单瓶在列表/详情徽标展示用的到期参考（遵循：用户确认优先；否则按当前状态采用未开封或开封后独立推算）
  */
@@ -446,15 +617,16 @@ export function resolveC1ItemExpiryForDisplay(item) {
       : { source: 'none', date: null, candidates: [] };
   }
   if (item?.status === 'in_use') {
-    if (dual.opened.date) {
-      return { source: 'computed', date: dual.opened.date, candidates: [dual.opened] };
-    }
-    if (dual.unopened.date) {
-      return { source: 'computed', date: dual.unopened.date, candidates: [dual.unopened] };
-    }
+    return dual.opened.date
+      ? { source: 'computed', date: dual.opened.date, candidates: [dual.opened] }
+      : { source: 'none', date: null, candidates: [] };
+  }
+  if (item?.status === 'used_up') {
+    if (dual.opened.date) return { source: 'computed', date: dual.opened.date, candidates: [dual.opened] };
+    if (dual.unopened.date) return { source: 'computed', date: dual.unopened.date, candidates: [dual.unopened] };
     return { source: 'none', date: null, candidates: [] };
   }
-  return resolveExpiry(item);
+  return { source: 'none', date: null, candidates: [] };
 }
 
 /**
@@ -474,6 +646,7 @@ export function hasC1LifecycleRecord(item) {
     item.manufactureDate ||
       item.unopenedShelfMonths ||
       item.openedDate ||
+      item.usedUpDate ||
       item.paoMonths ||
       item.confirmedExpiryDate ||
       hasPrice ||
@@ -521,6 +694,14 @@ export function evaluateC1QuickStatusOption(item, targetStatus) {
         reason: '',
       };
     }
+    if (cur === 'unopened') {
+      return {
+        allowed: true,
+        isCurrent: false,
+        requiresConfirm: 'open_today',
+        reason: '',
+      };
+    }
     return { allowed: true, isCurrent: false, requiresConfirm: false, reason: '' };
   }
 
@@ -547,8 +728,10 @@ export function evaluateC1QuickStatusOption(item, targetStatus) {
  * - 若首次/未记录单瓶填写了日期或价格但未手动选状态，系统按录入内容自动判定为「未开封」或「使用中」，绝不错误拦截
  */
 export function validateC1ItemTransitionAndFields({ previousItem = null, nextInput }) {
-  let targetStatus = String(nextInput?.status || '').trim();
+  const rawStatus = String(nextInput?.status || '').trim();
+  let targetStatus = rawStatus;
   const openedDate = String(nextInput?.openedDate || '').trim() || null;
+  let usedUpDate = String(nextInput?.usedUpDate || '').trim() || null;
   const manufactureDate = String(nextInput?.manufactureDate || '').trim() || null;
   const unopenedShelfMonths = nextInput?.unopenedShelfMonths
     ? Number.parseInt(String(nextInput.unopenedShelfMonths), 10)
@@ -569,21 +752,25 @@ export function validateC1ItemTransitionAndFields({ previousItem = null, nextInp
     manufactureDate,
     unopenedShelfMonths,
     openedDate,
+    usedUpDate,
     paoMonths,
     confirmedExpiryDate,
     remainingPercent: remainingRaw,
   });
 
   if (!targetStatus || targetStatus === 'unrecorded') {
+    if (rawStatus === 'unrecorded' && openedDate) {
+      return { ok: false, error: '使用状态为「未记录」时不能存在开封日期，请改为「使用中」或清空开封日期。' };
+    }
     if (previousItem && previousItem.status && previousItem.status !== 'unrecorded') {
       return { ok: false, error: '已有记录的产品不能改为未记录，请选择未开封、使用中或已用完。' };
     }
     if (!nextHasLifecycle) {
       targetStatus = 'unrecorded';
+    } else if (usedUpDate || remainingRaw === 0) {
+      targetStatus = 'used_up';
     } else if (openedDate) {
       targetStatus = 'in_use';
-    } else if (remainingRaw === 0) {
-      targetStatus = 'used_up';
     } else {
       targetStatus = 'unopened';
     }
@@ -608,6 +795,17 @@ export function validateC1ItemTransitionAndFields({ previousItem = null, nextInp
     }
   }
 
+  if (targetStatus === 'used_up') {
+    if (!usedUpDate) {
+      usedUpDate = todayStr();
+    }
+    if (openedDate && usedUpDate < openedDate) {
+      return { ok: false, error: '用完日期不能早于开封日期。' };
+    }
+  } else {
+    usedUpDate = null;
+  }
+
   if (previousItem?.status === 'used_up' && targetStatus === 'in_use' && remainingRaw <= 0) {
     return { ok: false, error: '恢复使用中时，剩余比例必须大于 0%。' };
   }
@@ -619,6 +817,7 @@ export function validateC1ItemTransitionAndFields({ previousItem = null, nextInp
       manufactureDate,
       unopenedShelfMonths,
       openedDate,
+      usedUpDate,
       paoMonths,
       confirmedExpiryDate,
       remainingPercent: targetStatus === 'used_up' ? 0 : remainingRaw,
