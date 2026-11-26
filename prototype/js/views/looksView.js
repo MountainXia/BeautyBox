@@ -1,6 +1,6 @@
 /**
  * 妆匣 BeautyBox · 浏览器交互原型（TASK 02）
- * Tab 3：妆容（妆容记录列表、详情、照片、关联产品实例快照、持妆时间线、白名单分享卡预览）
+ * Tab 3：妆容（妆容记录列表、详情、照片、关联产品快照、持妆时间线、白名单分享卡预览）
  */
 
 import { buildCategoryPlaceholderUrl, getSampleArtworkOptions } from '../assets.js';
@@ -17,6 +17,9 @@ import {
   renderUploadPreview,
   showFormError,
 } from '../components/ui.js';
+
+const LOOK_STYLE_PRESETS = Object.freeze(['清透通勤', '伪素颜', '约会温柔', '复古氛围', '纯欲淡颜', '欧美妆']);
+const LOOK_SCENE_PRESETS = Object.freeze(['日常通勤', '约会聚会', '周末出游', '重要场合', '居家试妆']);
 
 export function renderLooksView({ store, viewState, ctx }) {
   if (viewState.showTrash) {
@@ -78,7 +81,7 @@ export function renderLooksView({ store, viewState, ctx }) {
         ? renderEmptyState({
             icon: '✨',
             title: '还没有妆容记录',
-            desc: '拍下今日完成照，关联你实际用到的每一支产品实例并追踪持妆状态。',
+            desc: '拍下今日完成照，关联你实际用到的每一支产品并追踪持妆状态。',
             actionLabel: '+ 记录第一篇妆容',
             actionAttr: 'data-looks-add="1"',
           })
@@ -239,7 +242,7 @@ function renderLookDetail({ store, look, ctx }) {
           : ''}
       </div>
 
-      <!-- 关联产品实例快照（核心业务验证点） -->
+      <!-- 关联产品快照（核心业务验证点） -->
       <div class="card">
         <div class="section-header">
           <h2 class="section-title">使用产品快照（${usedItems.length} 件）</h2>
@@ -374,7 +377,7 @@ export function openLookFormSheet({ store, sheet, dialog, toast, lookId = null, 
         <input class="input" name="name" required placeholder="例如：周末低饱和茶棕妆" value="${esc(existing?.name || '')}" />
       </div>
 
-      <div class="field-row field-row-mobile-stack">
+      <div class="field-row">
         <div class="field">
           <label>日期 <span class="req">*</span></label>
           <input class="input" type="date" name="lookDate" value="${esc(existing?.lookDate || todayStr())}" required />
@@ -396,6 +399,17 @@ export function openLookFormSheet({ store, sheet, dialog, toast, lookId = null, 
         </div>
       </div>
 
+      <div class="stack-sm">
+        <div class="chips-scroll" aria-label="快捷选择风格">
+          <span class="muted-note" style="white-space:nowrap;">常用风格：</span>
+          ${LOOK_STYLE_PRESETS.map((st) => `<button type="button" class="preset-chip ${existing?.style === st ? 'is-active' : ''}" data-look-preset-style="${esc(st)}">${esc(st)}</button>`).join('')}
+        </div>
+        <div class="chips-scroll" aria-label="快捷选择场景">
+          <span class="muted-note" style="white-space:nowrap;">常用场景：</span>
+          ${LOOK_SCENE_PRESETS.map((sc) => `<button type="button" class="preset-chip ${existing?.scene === sc ? 'is-active' : ''}" data-look-preset-scene="${esc(sc)}">${esc(sc)}</button>`).join('')}
+        </div>
+      </div>
+
       <div class="field">
         <label>妆容照片（选择本地照片存 IndexedDB，或选本地示例图）</label>
         <div class="row-wrap">
@@ -410,9 +424,9 @@ export function openLookFormSheet({ store, sheet, dialog, toast, lookId = null, 
       </div>
 
       <div class="field">
-        <label>关联实际使用的产品实例（自动保存当时产品快照）</label>
+        <label>关联实际使用的产品（自动保存当时产品快照）</label>
         ${heldItems.length === 0
-          ? `<div class="form-banner-info">当前暂无“仍在持有”的实例，可先在妆匣添加产品实例后再关联，也可先保存纯妆容记录。</div>`
+          ? `<div class="form-banner-info">当前暂无仍在持有的产品，可先在妆匣添加产品后再关联，也可先保存纯妆容记录。</div>`
           : `
             <div class="stack-sm" style="max-height:190px;overflow-y:auto;border:1px solid var(--border-subtle);padding:8px 10px;border-radius:12px;background:var(--bg-card);">
               ${heldItems
@@ -490,6 +504,35 @@ export function openLookFormSheet({ store, sheet, dialog, toast, lookId = null, 
       const fileInput = body.querySelector('#look-file-input');
       const fileNameEl = body.querySelector('#look-file-name');
       const previewWrap = body.querySelector('#look-upload-preview');
+      const styleInp = form.querySelector('[name="style"]');
+      const sceneInp = form.querySelector('[name="scene"]');
+
+      const syncPresetActive = (attrName, inp) => {
+        const val = String(inp?.value || '').trim();
+        body.querySelectorAll(`[${attrName}]`).forEach((btn) => {
+          btn.classList.toggle('is-active', btn.getAttribute(attrName) === val);
+        });
+      };
+      body.querySelectorAll('[data-look-preset-style]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          if (!styleInp) return;
+          const v = btn.dataset.lookPresetStyle;
+          styleInp.value = styleInp.value.trim() === v ? '' : v;
+          isDirty = true;
+          syncPresetActive('data-look-preset-style', styleInp);
+        });
+      });
+      body.querySelectorAll('[data-look-preset-scene]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          if (!sceneInp) return;
+          const v = btn.dataset.lookPresetScene;
+          sceneInp.value = sceneInp.value.trim() === v ? '' : v;
+          isDirty = true;
+          syncPresetActive('data-look-preset-scene', sceneInp);
+        });
+      });
+      styleInp?.addEventListener('input', () => syncPresetActive('data-look-preset-style', styleInp));
+      sceneInp?.addEventListener('input', () => syncPresetActive('data-look-preset-scene', sceneInp));
 
       const updateUploadPreview = () => {
         if (pendingFile && pendingPreviewUrl) {
@@ -932,7 +975,11 @@ function openSharePreviewSheet({ store, sheet, toast, lookId }) {
             <h3 class="section-title" style="font-size:14px;">分享图片（PNG）</h3>
             <span class="pill pill-sage" id="share-png-status">生成中...</span>
           </div>
-          <div id="share-png-result" class="muted-note">正在本地渲染高清 PNG 分享卡...</div>
+          <div id="share-png-result">
+            <div id="share-png-placeholder" class="muted-note">正在本地渲染高清 PNG 分享卡...</div>
+            <img id="share-generated-png" alt="生成的分享图" style="width:100%;height:auto;border-radius:14px;display:none;border:1px solid var(--border-subtle);" />
+            <div id="share-png-caption" class="muted-note" style="display:none;margin-top:6px;text-align:center;">长按上方图片可直接在 iPhone Safari 选择“存储到照片”</div>
+          </div>
         </div>
 
         <div class="stack-sm">
@@ -946,7 +993,9 @@ function openSharePreviewSheet({ store, sheet, toast, lookId }) {
     onMount: (body) => {
       const errBox = body.querySelector('#share-save-error');
       const pngStatus = body.querySelector('#share-png-status');
-      const pngResult = body.querySelector('#share-png-result');
+      const placeholderEl = body.querySelector('#share-png-placeholder');
+      const imgEl = body.querySelector('#share-generated-png');
+      const captionEl = body.querySelector('#share-png-caption');
       const shareBtn = body.querySelector('#btn-save-share-card');
       const downloadBtn = body.querySelector('#btn-download-share-png');
 
@@ -964,9 +1013,11 @@ function openSharePreviewSheet({ store, sheet, toast, lookId }) {
       const rebuildPng = async () => {
         const mySeq = ++renderSeq;
         errBox.style.display = 'none';
-        shareBtn.disabled = true;
-        downloadBtn.disabled = true;
-        pngStatus.textContent = '生成中...';
+        if (!generatedBlobUrl) {
+          shareBtn.disabled = true;
+          downloadBtn.disabled = true;
+        }
+        pngStatus.textContent = generatedBlobUrl ? '更新中...' : '生成中...';
         pngStatus.className = 'pill';
 
         const payload = buildShareCardPayload({ look, items, wearList, shareOpts });
@@ -977,22 +1028,50 @@ function openSharePreviewSheet({ store, sheet, toast, lookId }) {
         if (!res.ok) {
           pngStatus.textContent = '生成失败';
           pngStatus.className = 'pill pill-danger';
-          pngResult.innerHTML = `<div style="color:var(--danger);">${esc(res.error)}</div>`;
+          if (placeholderEl) {
+            placeholderEl.style.display = 'block';
+            placeholderEl.style.color = 'var(--danger)';
+            placeholderEl.textContent = res.error;
+          }
+          if (imgEl) imgEl.style.display = 'none';
+          if (captionEl) captionEl.style.display = 'none';
+          shareBtn.disabled = true;
+          downloadBtn.disabled = true;
           showFormError(errBox, res.error, toast);
           return;
         }
 
-        revokeGeneratedUrl();
-        generatedBlobUrl = URL.createObjectURL(res.blob);
+        const nextUrl = URL.createObjectURL(res.blob);
+        // 离屏预解码完成后再原位替换 img.src，避免勾选复选框时闪烁或高度塌陷
+        try {
+          const preloader = new Image();
+          preloader.src = nextUrl;
+          if (typeof preloader.decode === 'function') {
+            await preloader.decode();
+          }
+        } catch {
+          // ignore decode warning and let img element render blob
+        }
+        if (mySeq !== renderSeq) {
+          URL.revokeObjectURL(nextUrl);
+          return;
+        }
+
+        const prevUrl = generatedBlobUrl;
+        generatedBlobUrl = nextUrl;
         generatedFile = res.file;
         generatedFileName = res.fileName;
 
+        if (imgEl) {
+          imgEl.src = nextUrl;
+          imgEl.style.display = 'block';
+        }
+        if (placeholderEl) placeholderEl.style.display = 'none';
+        if (captionEl) captionEl.style.display = 'block';
+        if (prevUrl) URL.revokeObjectURL(prevUrl);
+
         pngStatus.textContent = `已就绪 · ${formatBytes(res.blob.size)}`;
         pngStatus.className = 'pill pill-sage';
-        pngResult.innerHTML = `
-          <img id="share-generated-png" src="${generatedBlobUrl}" alt="生成的分享图" style="width:100%;height:auto;border-radius:14px;display:block;border:1px solid var(--border-subtle);" />
-          <div class="muted-note" style="margin-top:6px;text-align:center;">长按上方图片可直接在 iPhone Safari 选择“存储到照片”</div>
-        `;
         shareBtn.disabled = false;
         downloadBtn.disabled = false;
       };

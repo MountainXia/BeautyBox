@@ -42,12 +42,12 @@ export function getProductDisplayImageUrl(store, productId) {
   };
 }
 
-export function renderEmptyState({ icon = '✦', title, desc, actionLabel = '', actionAttr = '' }) {
+export function renderEmptyState({ icon = '✦', title, desc = '', descHtml = '', actionLabel = '', actionAttr = '' }) {
   return `
     <div class="empty-state">
       <div class="empty-icon" aria-hidden="true">${esc(icon)}</div>
       <div style="font-weight:700;font-size:15px;">${esc(title)}</div>
-      <div class="muted-note" style="max-width:280px;">${esc(desc)}</div>
+      <div class="muted-note" style="max-width:300px;line-height:1.55;">${descHtml || esc(desc)}</div>
       ${actionLabel ? `<button type="button" class="btn btn-primary btn-sm" ${actionAttr}>${esc(actionLabel)}</button>` : ''}
     </div>
   `;

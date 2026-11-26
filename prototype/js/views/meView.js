@@ -3,7 +3,7 @@
  * Tab 5：我的（本地数据说明、临期阈值设置、导出与模拟备份恢复、iCloud 边界说明、PRO 订阅模拟、隐私说明）
  */
 
-import { CURRENCIES, CURRENCY_ORDER } from '../currency.js';
+import { COMMON_CURRENCY_ORDER, CURRENCIES } from '../currency.js';
 import { esc, formatBytes } from '../components/ui.js';
 import {
   clearDiagnostics,
@@ -89,7 +89,7 @@ export function renderMeView({ store, viewState = {}, ctx }) {
             默认人民币；选择首页「资产总额」展示币种（不做跨币种相加或汇率换算，多币种可在首页“各币种明细”查看）。
           </div>
           <div class="row-wrap" style="margin-bottom:12px;">
-            ${CURRENCY_ORDER.map((c) => {
+            ${[...new Set([...COMMON_CURRENCY_ORDER, ...(CURRENCIES[selectedCurrency] ? [selectedCurrency] : [])])].map((c) => {
               const info = CURRENCIES[c];
               return `<button type="button" class="chip ${selectedCurrency === c ? 'is-active' : ''}" data-me-currency="${esc(c)}">${esc(info.name)} (${esc(c)})</button>`;
             }).join('')}
@@ -132,7 +132,7 @@ export function renderMeView({ store, viewState = {}, ctx }) {
           <div class="stack-sm">
             <div class="field-row">
               <button type="button" class="btn btn-secondary btn-sm" id="me-export-json">导出 JSON</button>
-              <button type="button" class="btn btn-secondary btn-sm" id="me-export-csv">导出实例 CSV</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="me-export-csv">导出明细 CSV</button>
             </div>
             <button type="button" class="btn btn-soft btn-block" id="me-mock-backup">生成模拟 .beautyboxbackup 清单包</button>
             <button type="button" class="btn btn-secondary btn-block" id="me-mock-restore">从备份文件恢复（交互模拟）</button>
@@ -383,7 +383,7 @@ export function bindMeEvents(container, { store, viewState = {}, actions, sheet,
   container.querySelector('#me-export-csv')?.addEventListener('click', () => {
     const csv = store.buildProductItemsCsv();
     triggerDownload(`beautybox-items-${Date.now()}.csv`, csv, 'text/csv;charset=utf-8');
-    toast('已导出产品实例 CSV（含币种与最小货币单位）');
+    toast('已导出产品明细 CSV（含币种与最小货币单位）');
   });
 
   container.querySelector('#me-mock-backup')?.addEventListener('click', () => {

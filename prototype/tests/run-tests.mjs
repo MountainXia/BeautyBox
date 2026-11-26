@@ -114,7 +114,7 @@ test('静态规范检查：currency.js 不包含浮点转换，store 序列化�
   assert.equal(/data:image\/.*;base64/i.test(storage.getItem(STORAGE_KEY)), false);
 });
 
-test('多币种精确转换与往返一致：CNY/HKD/USD/GBP（2位小数）', () => {
+test('多币种精确转换与往返一致：CNY/HKD/USD/GBP/EUR（2位）、JPY（0位）、KWD（3位）', () => {
   const cases = [
     { code: 'CNY', input: '12.34', minor: '1234', dec: '12.34', formatted: '¥ 12.34' },
     { code: 'CNY', input: '0.05', minor: '5', dec: '0.05', formatted: '¥ 0.05' },
@@ -122,6 +122,9 @@ test('多币种精确转换与往返一致：CNY/HKD/USD/GBP（2位小数）', (
     { code: 'HKD', input: '480', minor: '48000', dec: '480.00', formatted: 'HK$ 480.00' },
     { code: 'USD', input: '12.34', minor: '1234', dec: '12.34', formatted: 'US$ 12.34' },
     { code: 'GBP', input: '32.50', minor: '3250', dec: '32.50', formatted: '£ 32.50' },
+    { code: 'EUR', input: '45.6', minor: '4560', dec: '45.60', formatted: '€ 45.60' },
+    { code: 'JPY', input: '1200', minor: '1200', dec: '1200', formatted: 'JP¥ 1,200' },
+    { code: 'KWD', input: '12.345', minor: '12345', dec: '12.345', formatted: 'KD 12.345' },
   ];
   for (const c of cases) {
     const parsed = parseAmountToMinor(c.input, c.code);
@@ -133,9 +136,17 @@ test('多币种精确转换与往返一致：CNY/HKD/USD/GBP（2位小数）', (
 });
 
 test('拦截未配置币种与超出标准精度的输入（禁止默认 2 位与静默截断）', () => {
-  const eur = parseAmountToMinor('12.34', 'EUR');
-  assert.equal(eur.ok, false);
-  assert.equal(eur.error, UNSUPPORTED_MESSAGE);
+  const xts = parseAmountToMinor('12.34', 'XTS');
+  assert.equal(xts.ok, false);
+  assert.equal(xts.error, UNSUPPORTED_MESSAGE);
+
+  const jpyDec = parseAmountToMinor('12.5', 'JPY');
+  assert.equal(jpyDec.ok, false);
+  assert.equal(jpyDec.code, 'PRECISION');
+
+  const kwd4 = parseAmountToMinor('12.3456', 'KWD');
+  assert.equal(kwd4.ok, false);
+  assert.equal(kwd4.code, 'PRECISION');
 
   const cny3 = parseAmountToMinor('12.345', 'CNY');
   assert.equal(cny3.ok, false);
@@ -184,7 +195,7 @@ test('有效期规则：不猜测缺项、月末边界正确、不覆盖用户�
   const badCur = store.saveProductItem({
     productId: 'prod-lip-196',
     status: 'in_use',
-    currencyCode: 'EUR',
+    currencyCode: 'XTS',
     purchasePriceInput: '25.00',
   });
   assert.equal(badCur.ok, false);
@@ -565,10 +576,24 @@ test('TASK02.1-C2：未记录状态与统计口径、名称自动组合、原子
   assert.equal(getItemExpiryCompleteness(confirmItem0.item).isIncompleteExpiry, false);
   assert.equal(resolveItemExpiryForDisplay(confirmItem0.item).date, '2027-11-01');
 
-  // 3. 冲突校验：未记录不可携带开封日期；未开封不可保留开封日期；已用完用完日期不可早于开封日期
+  // 3. 冲突校验：未记录不可携带开封日期；未开封不可保留开封日期；开封/用完日期不可早于生产日期；已用完用完日期不可早于开封日期
   assert.equal(detectItemDataConflict({ status: 'unrecorded', openedDate: '2026-11-01' }).hasConflict, true);
+  assert.equal(detectItemDataConflict({ status: 'in_use', manufactureDate: '2026-11-10', openedDate: '2026-03-11' }).hasConflict, true);
   assert.equal(validateItemTransitionAndFields({ previousItem: null, nextInput: { status: 'unrecorded', openedDate: '2026-11-01' } }).ok, false);
   assert.equal(validateItemTransitionAndFields({ previousItem: null, nextInput: { status: 'unopened', openedDate: '2026-11-01' } }).ok, false);
+  const badOpenedRes = validateItemTransitionAndFields({
+    previousItem: null,
+    nextInput: { status: 'in_use', manufactureDate: '2026-11-10', openedDate: '2026-03-11' },
+  });
+  assert.equal(badOpenedRes.ok, false);
+  assert.match(badOpenedRes.error, /开封日期不能早于生产日期/);
+  const badUsedMfgRes = validateItemTransitionAndFields({
+    previousItem: null,
+    nextInput: { status: 'used_up', manufactureDate: '2026-11-10', usedUpDate: '2026-03-11' },
+  });
+  assert.equal(badUsedMfgRes.ok, false);
+  assert.match(badUsedMfgRes.error, /用完日期不能早于生产日期/);
+  assert.equal(store.saveProductItem({ productId: batchRes.product.id, status: 'in_use', manufactureDate: '2026-11-10', openedDate: '2026-03-11' }).ok, false);
   assert.equal(validateItemTransitionAndFields({ previousItem: confirmItem0.item, nextInput: { ...confirmItem0.item, status: 'used_up', usedUpDate: '2026-10-01' } }).ok, false);
 
   const dur = formatUsageDuration('2026-01-01', '2026-04-11');
@@ -632,10 +657,29 @@ test('TASK02.1-C2：未记录状态与统计口径、名称自动组合、原子
   assert.equal(keptLookItem.productItemId, null);
   assert.equal(keptLookItem.productNameSnapshot, 'Zelens 粉底液 浮雕白');
 
-  // 6. 正式视图去术语化检查（严禁向普通用户展示研发/数据库术语）
+  // 6. D3 旧手机缓存 JPY / KWD 兼容（绝不丢失用户旧币种资产且可准确格式化汇总）
+  const jpyItemRes = v2Store.saveProductItem({
+    productId: dupNewRes.product.id,
+    status: 'unopened',
+    currencyCode: 'JPY',
+    purchasePriceInput: '3800',
+  });
+  const kwdItemRes = v2Store.saveProductItem({
+    productId: dupNewRes.product.id,
+    status: 'unopened',
+    currencyCode: 'KWD',
+    purchasePriceInput: '15.250',
+  });
+  assert.equal(jpyItemRes.ok, true);
+  assert.equal(kwdItemRes.ok, true);
+  const fxSummary = v2Store.getHomeSummary();
+  assert.equal(fxSummary.currencyTotals.some((r) => r.currencyCode === 'JPY' && r.minor === '3800'), true);
+  assert.equal(fxSummary.currencyTotals.some((r) => r.currencyCode === 'KWD' && r.minor === '15250'), true);
+
+  // 7. 正式视图去术语化检查（严禁向普通用户展示研发/数据库术语）
   const uiFiles = ['js/app.js', 'js/views/boxView.js', 'js/views/homeView.js', 'js/views/meView.js', 'js/views/looksView.js', 'js/views/dailyView.js'];
   for (const rel of uiFiles) {
     const src = fs.readFileSync(path.join(PROTOTYPE_DIR, rel), 'utf8');
-    assert.equal(/\bProductItem\b|持有实例|产品主档|产品档案/.test(src), false, `${rel} 不得向普通用户暴露内部专业术语`);
+    assert.equal(/\bProductItem\b|持有实例|产品主档|产品档案|产品实例|款资料|导出实例/.test(src), false, `${rel} 不得向普通用户暴露内部专业术语`);
   }
 });

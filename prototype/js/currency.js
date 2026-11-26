@@ -12,18 +12,31 @@
  * 说明：本文件刻意不使用任何浮点转换 API，tests/run-tests.mjs 会对源码做静态检查。
  */
 
-/** 集中式离线币种精度配置（minor unit exponent = 标准小数位数） */
+/** 集中式离线 ISO 4217 常用币种精度配置（minor unit exponent = 标准小数位数） */
 export const CURRENCIES = Object.freeze({
   CNY: Object.freeze({ code: 'CNY', name: '人民币', symbol: '¥', exponent: 2 }),
   HKD: Object.freeze({ code: 'HKD', name: '港币', symbol: 'HK$', exponent: 2 }),
   USD: Object.freeze({ code: 'USD', name: '美元', symbol: 'US$', exponent: 2 }),
   GBP: Object.freeze({ code: 'GBP', name: '英镑', symbol: '£', exponent: 2 }),
+  JPY: Object.freeze({ code: 'JPY', name: '日元', symbol: 'JP¥', exponent: 0 }),
+  KRW: Object.freeze({ code: 'KRW', name: '韩元', symbol: '₩', exponent: 0 }),
+  EUR: Object.freeze({ code: 'EUR', name: '欧元', symbol: '€', exponent: 2 }),
+  TWD: Object.freeze({ code: 'TWD', name: '新台币', symbol: 'NT$', exponent: 2 }),
+  SGD: Object.freeze({ code: 'SGD', name: '新加坡元', symbol: 'S$', exponent: 2 }),
+  AUD: Object.freeze({ code: 'AUD', name: '澳元', symbol: 'A$', exponent: 2 }),
+  CAD: Object.freeze({ code: 'CAD', name: '加元', symbol: 'C$', exponent: 2 }),
+  THB: Object.freeze({ code: 'THB', name: '泰铢', symbol: '฿', exponent: 2 }),
+  CHF: Object.freeze({ code: 'CHF', name: '瑞士法郎', symbol: 'CHF', exponent: 2 }),
+  KWD: Object.freeze({ code: 'KWD', name: '科威特第纳尔', symbol: 'KD', exponent: 3 }),
+  BHD: Object.freeze({ code: 'BHD', name: '巴林第纳尔', symbol: 'BD', exponent: 3 }),
+  OMR: Object.freeze({ code: 'OMR', name: '阿曼里亚尔', symbol: 'OMR', exponent: 3 }),
 });
 
 export const CURRENCY_ORDER = Object.freeze(Object.keys(CURRENCIES));
+export const COMMON_CURRENCY_ORDER = Object.freeze(['CNY', 'HKD', 'USD', 'GBP', 'JPY', 'EUR']);
 
-/** 仅用于在原型中演示「未配置币种拦截」，这些币种不在精度配置中，不可保存金额 */
-export const UNCONFIGURED_DEMO_CODES = Object.freeze(['EUR', 'KRW']);
+/** 仅用于在原型中演示「真正未知的未配置币种拦截」，不可保存金额 */
+export const UNCONFIGURED_DEMO_CODES = Object.freeze(['XTS', 'ZZZ']);
 
 /** 最小货币单位整数的最大位数（防止异常超长输入） */
 export const MAX_MINOR_DIGITS = 15;

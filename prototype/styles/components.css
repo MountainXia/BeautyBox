@@ -2,9 +2,7 @@
 .app-header {
   flex-shrink: 0;
   padding: calc(10px + var(--safe-top)) var(--space-4) 10px;
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: var(--bg-card);
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
@@ -306,8 +304,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   overflow-x: auto;
-  padding-bottom: 2px;
+  padding: 0;
   scrollbar-width: none;
 }
 
@@ -1207,6 +1206,64 @@ button:disabled {
 }
 .section-hint {
   white-space: normal;
+}
+
+.nowrap {
+  white-space: nowrap;
+  display: inline-block;
+}
+
+.select-compact {
+  width: auto;
+  flex-shrink: 0;
+  height: 34px;
+  min-height: 34px;
+  max-height: 34px;
+  line-height: 32px;
+  padding: 0 28px 0 12px;
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  font-weight: 500;
+  background-position: right 9px center;
+}
+
+.adopt-btn-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+  gap: 8px;
+}
+
+.adopt-btn-row .btn-sm {
+  width: 100%;
+  font-size: 12px;
+  padding: 0 10px;
+}
+
+.field-row .field label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset-chip {
+  appearance: none;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  border-radius: var(--radius-pill);
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.preset-chip.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
 }
 
 .c1-status-bar {

@@ -158,7 +158,7 @@ export function renderHomeView({ store, ctx, actions }) {
                       <div style="flex:1;">
                         <div class="row-between" style="margin-bottom:5px;">
                           <span style="font-weight:600;font-size:13px;">${esc(row.category.name)}</span>
-                          <span class="muted-note">${row.productCount} 款资料 · ${row.heldCount} 件持有</span>
+                          <span class="muted-note">${row.productCount} 款产品 · ${row.heldCount} 件持有</span>
                         </div>
                         <div class="progress-track">
                           <div class="progress-fill" style="width:${pct}%;"></div>
@@ -182,7 +182,7 @@ export function renderHomeView({ store, ctx, actions }) {
           ? renderEmptyState({
               icon: '✧',
               title: '还没有妆容记录',
-              desc: '记录今天用的粉底、眼影与唇膏，生成可追溯的妆容档案。',
+              desc: '记录今天用的粉底、眼影与唇膏，生成可追溯的妆容记录。',
               actionLabel: '记录第一次妆容',
               actionAttr: 'data-home-add-look="1"',
             })

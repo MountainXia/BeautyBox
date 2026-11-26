@@ -156,7 +156,7 @@ function renderUsageSection(store) {
               return `
                 <div class="card">
                   <div class="row-between">
-                    <div style="font-weight:700;font-size:14px;">${esc(prod ? prod.name : '已移除产品实例')}</div>
+                    <div style="font-weight:700;font-size:14px;">${esc(prod ? prod.name : '已移除产品')}</div>
                     <span class="pill">${esc(u.usedDate)}</span>
                   </div>
                   <div class="muted-note" style="margin-top:4px;">
@@ -373,7 +373,7 @@ function openNewUsageSheet({ store, sheet, toast, defaultDate, onSaved }) {
               .join('')}
           </select>
         </div>
-        <div class="field-row field-row-mobile-stack">
+        <div class="field-row">
           <div class="field">
             <label>使用日期 <span class="req">*</span></label>
             <input class="input" type="date" name="usedDate" value="${esc(defaultDate)}" required />

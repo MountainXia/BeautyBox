@@ -230,7 +230,10 @@ export function isHeldStatus(status) {
 /** 校验单件是否存在状态与开封日期冲突 */
 export function detectItemDataConflict(item) {
   if (!item) return { hasConflict: false, message: '' };
-  const hasOpened = String(item.openedDate || '').trim() !== '';
+  const mfgStr = String(item.manufactureDate || '').trim();
+  const openedStr = String(item.openedDate || '').trim();
+  const usedUpStr = String(item.usedUpDate || '').trim();
+  const hasOpened = openedStr !== '';
   if (item.status === 'unrecorded' && hasOpened) {
     return {
       hasConflict: true,
@@ -241,6 +244,24 @@ export function detectItemDataConflict(item) {
     return {
       hasConflict: true,
       message: '数据校验异常：使用状态为「未开封」，却存在开封日期。',
+    };
+  }
+  if (mfgStr && hasOpened && isValidDate(mfgStr) && isValidDate(openedStr) && openedStr < mfgStr) {
+    return {
+      hasConflict: true,
+      message: `数据校验异常：开封日期（${openedStr}）早于生产日期（${mfgStr}），请核对日期。`,
+    };
+  }
+  if (mfgStr && usedUpStr && isValidDate(mfgStr) && isValidDate(usedUpStr) && usedUpStr < mfgStr) {
+    return {
+      hasConflict: true,
+      message: `数据校验异常：用完日期（${usedUpStr}）早于生产日期（${mfgStr}），请核对日期。`,
+    };
+  }
+  if (hasOpened && usedUpStr && isValidDate(openedStr) && isValidDate(usedUpStr) && usedUpStr < openedStr) {
+    return {
+      hasConflict: true,
+      message: `数据校验异常：用完日期（${usedUpStr}）早于开封日期（${openedStr}），请核对日期。`,
     };
   }
   return { hasConflict: false, message: '' };
@@ -550,8 +571,14 @@ export function validateItemTransitionAndFields({ previousItem = null, nextInput
   if (targetStatus === 'in_use' && !openedDate) {
     return { ok: false, error: '「使用中」状态必须填写有效的开封日期。' };
   }
+  if (openedDate && manufactureDate && isValidDate(openedDate) && isValidDate(manufactureDate) && openedDate < manufactureDate) {
+    return { ok: false, error: '开封日期不能早于生产日期。' };
+  }
   if (targetStatus === 'used_up') {
     if (!usedUpDate) usedUpDate = todayStr();
+    if (manufactureDate && isValidDate(manufactureDate) && isValidDate(usedUpDate) && usedUpDate < manufactureDate) {
+      return { ok: false, error: '用完日期不能早于生产日期。' };
+    }
     if (openedDate && isValidDate(openedDate) && isValidDate(usedUpDate) && usedUpDate < openedDate) {
       return { ok: false, error: '用完日期不能早于开封日期。' };
     }
@@ -1296,9 +1323,16 @@ export class PrototypeStore {
     const pm = checkMonths(input.paoMonths, 'paoMonths', '开封后使用期限（PAO）');
     if (!pm.ok) return pm;
 
+    if (od.value && md.value && od.value < md.value) {
+      return this.failValidation('product_item', 'openedDate', '开封日期不能早于生产日期');
+    }
+
     let finalUsedUpDate = null;
     if (status === 'used_up') {
       finalUsedUpDate = ud.value || (targetPrev?.status === 'used_up' ? targetPrev.usedUpDate : null) || todayStr();
+      if (md.value && finalUsedUpDate < md.value) {
+        return this.failValidation('product_item', 'usedUpDate', '用完日期不能早于生产日期');
+      }
       if (od.value && finalUsedUpDate < od.value) {
         return this.failValidation('product_item', 'usedUpDate', '用完日期不能早于开封日期');
       }

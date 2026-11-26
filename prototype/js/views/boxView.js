@@ -28,7 +28,6 @@ import {
   CATEGORY_SUBCATEGORIES,
   ITEM_STATUSES,
   QUANTITY_UNITS,
-  SPEC_UNITS,
   STATUS_FILTER_META,
   composeProductDisplayName,
   evaluateQuickStatusOption,
@@ -415,15 +414,15 @@ export function renderBoxView({ store, viewState, ctx }) {
           .join('')}
       </div>
 
-      <div class="row-between" style="gap:8px;">
-        <div class="chips-scroll" id="box-status-scroll" style="flex:1;">
+      <div class="row-between" style="gap:8px;align-items:center;">
+        <div class="chips-scroll" id="box-status-scroll" style="flex:1;min-width:0;">
           ${statusChips
             .map(
               (s) => `<button type="button" class="chip ${stFilter === s.key ? 'is-active' : ''}" data-box-status="${esc(s.key)}">${esc(s.label)}</button>`,
             )
             .join('')}
         </div>
-        <select id="box-sort-select" class="select" style="width:auto;min-height:34px;padding:4px 10px;font-size:13px;">
+        <select id="box-sort-select" class="select select-compact" aria-label="排序方式">
           <option value="updated" ${sortBy === 'updated' ? 'selected' : ''}>最近更新</option>
           <option value="expiry_asc" ${sortBy === 'expiry_asc' ? 'selected' : ''}>到期日由近到远</option>
           <option value="name" ${sortBy === 'name' ? 'selected' : ''}>按名称</option>
@@ -434,7 +433,7 @@ export function renderBoxView({ store, viewState, ctx }) {
         ? renderEmptyState({
             icon: '✧',
             title: '还没有记录美妆产品',
-            desc: '点击「+ 添加产品」，只填名称或品牌分类即可快速记下一件。',
+            descHtml: '点击右上角 <span class="nowrap">「+ 添加产品」</span>，只填名称或品牌分类即可快速记下一件。',
             actionLabel: '+ 添加第一款产品',
             actionAttr: 'data-box-add-product="1"',
           })
@@ -444,7 +443,7 @@ export function renderBoxView({ store, viewState, ctx }) {
             ? renderEmptyState({
                 icon: '⌕',
                 title: '没有找到匹配的美妆产品',
-                desc: '可以尝试切换筛选条件，或点击右上角「+ 添加产品」。',
+                descHtml: '可以尝试切换筛选条件，或点击右上角 <span class="nowrap">「+ 添加产品」</span>。',
                 actionLabel: '清除筛选条件',
                 actionAttr: 'data-box-clear-filters="1"',
               })
@@ -815,7 +814,7 @@ function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = fa
         </div>
       </div>
 
-      <div class="field-row field-row-mobile-stack" style="margin-top:8px;">
+      <div class="field-row" style="margin-top:8px;">
         <div class="field">
           <label>生产日期</label>
           <input class="input" type="date" data-df="manufactureDate" value="${esc(draft.manufactureDate)}" />
@@ -826,11 +825,11 @@ function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = fa
         </div>
       </div>
 
-      <div class="field-row field-row-mobile-stack" style="margin-top:8px;">
+      <div class="field-row" style="margin-top:8px;">
         <div class="field">
           <label>开封日期</label>
           <div data-opened-wrap style="position:relative;">
-            <input class="input" type="date" data-df="openedDate" value="${esc(draft.openedDate)}" ${isOpenedLocked ? 'readonly style="background:var(--bg-subtle);color:var(--text-tertiary);pointer-events:none;"' : ''} />
+            <input class="input" type="date" data-df="openedDate" min="${esc(draft.manufactureDate || '')}" value="${esc(draft.openedDate)}" ${isOpenedLocked ? 'readonly style="background:var(--bg-subtle);color:var(--text-tertiary);pointer-events:none;"' : ''} />
             <div data-opened-lock-hit style="display:${isOpenedLocked ? 'block' : 'none'};position:absolute;inset:0;cursor:not-allowed;" title="请先切换使用状态后再填写开封日期"></div>
           </div>
         </div>
@@ -842,7 +841,7 @@ function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = fa
 
       <div class="field" data-usedup-wrap style="margin-top:8px;display:${draft.status === 'used_up' ? '' : 'none'};">
         <label>用完日期</label>
-        <input class="input" type="date" data-df="usedUpDate" value="${esc(draft.usedUpDate || '')}" />
+        <input class="input" type="date" data-df="usedUpDate" min="${esc([draft.manufactureDate, draft.openedDate].filter(Boolean).sort().pop() || '')}" value="${esc(draft.usedUpDate || '')}" />
         <div class="field-help" data-usedup-dur-preview></div>
       </div>
 
@@ -853,13 +852,13 @@ function renderItemDraftBlock(idx, draft, { showTitle = false, showCurrency = fa
         </div>
         <div class="form-banner-info" data-dual-preview style="display:none;font-size:12px;"></div>
         <input class="input" type="date" data-df="confirmedExpiryDate" value="${esc(draft.confirmedExpiryDate)}" />
-        <div class="row-wrap" style="margin-top:4px;">
+        <div class="adopt-btn-row" style="margin-top:6px;">
           <button type="button" class="btn btn-soft btn-sm" data-adopt-unopened>采纳未开封推算</button>
           <button type="button" class="btn btn-soft btn-sm" data-adopt-opened>采纳开封后推算</button>
         </div>
       </div>
 
-      <div class="field-row field-row-mobile-stack" style="margin-top:8px;">
+      <div class="field-row" style="margin-top:8px;">
         <div class="field">
           <label>购买价格（${esc(CURRENCIES[draft.currencyCode]?.name || draft.currencyCode || '人民币')}）</label>
           <input class="input" inputmode="decimal" placeholder="例如 320.00" data-df="purchasePriceInput" value="${esc(draft.purchasePriceInput)}" />
@@ -954,6 +953,10 @@ function bindDraftExpiryHelpers(box, draft, toast) {
     draft.usedUpDate = usedUpVal;
     draft.paoMonths = paoRaw;
 
+    if (openInput) openInput.min = mfg || '';
+    if (usedUpInput) usedUpInput.min = [mfg, opened].filter(Boolean).sort().pop() || '';
+    const openedBeforeMfg = Boolean(mfg && opened && opened < mfg);
+
     if (acqCustomWrap && acqSel) {
       acqCustomWrap.style.display = acqSel.value === '其他' ? '' : 'none';
     }
@@ -964,10 +967,15 @@ function bindDraftExpiryHelpers(box, draft, toast) {
       usedUpWrap.style.display = curStatus === 'used_up' ? '' : 'none';
     }
     if (usedUpDurEl && curStatus === 'used_up') {
-      if (!opened) {
+      const effectiveUsedUp = usedUpVal || todayStr();
+      if (mfg && effectiveUsedUp < mfg) {
+        usedUpDurEl.textContent = '使用时长：用完日期不能早于生产日期';
+      } else if (!opened) {
         usedUpDurEl.textContent = '使用时长：填写开封日期后自动计算';
+      } else if (openedBeforeMfg) {
+        usedUpDurEl.textContent = '使用时长：开封日期不能早于生产日期';
       } else {
-        const dur = formatUsageDuration(opened, usedUpVal || todayStr());
+        const dur = formatUsageDuration(opened, effectiveUsedUp);
         usedUpDurEl.textContent = dur.valid ? `使用时长：${dur.text}` : `使用时长：${dur.error || '无法计算'}`;
       }
     }
@@ -975,7 +983,7 @@ function bindDraftExpiryHelpers(box, draft, toast) {
     const dual = deriveDualComputedExpiry({
       manufactureDate: mfg || null,
       unopenedShelfMonths: /^\d+$/.test(shelfRaw) ? Number.parseInt(shelfRaw, 10) : null,
-      openedDate: opened || null,
+      openedDate: openedBeforeMfg ? null : (opened || null),
       paoMonths: /^\d+$/.test(paoRaw) ? Number.parseInt(paoRaw, 10) : null,
     });
     if (previewEl) {
@@ -983,9 +991,11 @@ function bindDraftExpiryHelpers(box, draft, toast) {
         dual.unopened.date
           ? `未开封推算：${dual.unopened.date}（${dual.unopened.formula}）`
           : `未开封推算：${dual.unopened.missingHint || '未填写生产日期与未开封保质期'}`,
-        dual.opened.date
-          ? `开封后推算：${dual.opened.date}（${dual.opened.formula}）`
-          : `开封后推算：${locked ? '未开封状态下不启用开封后推算' : (dual.opened.missingHint || '未填写开封日期与 PAO')}`,
+        openedBeforeMfg
+          ? `开封后推算：开封日期（${opened}）不能早于生产日期（${mfg}）`
+          : dual.opened.date
+            ? `开封后推算：${dual.opened.date}（${dual.opened.formula}）`
+            : `开封后推算：${locked ? '未开封状态下不启用开封后推算' : (dual.opened.missingHint || '未填写开封日期与 PAO')}`,
       ];
       previewEl.innerHTML = lines.map((l) => `<div>${esc(l)}</div>`).join('');
     }
@@ -995,7 +1005,7 @@ function bindDraftExpiryHelpers(box, draft, toast) {
       btnUnopened.textContent = dual.unopened.date ? `采纳未开封 (${dual.unopened.date})` : '采纳未开封推算';
     }
     if (btnOpened) {
-      const showOpenedAdopt = Boolean(dual.opened.date) && (curStatus === 'in_use' || curStatus === 'used_up');
+      const showOpenedAdopt = !openedBeforeMfg && Boolean(dual.opened.date) && (curStatus === 'in_use' || curStatus === 'used_up');
       btnOpened.disabled = !showOpenedAdopt;
       btnOpened.style.display = showOpenedAdopt ? '' : 'none';
       btnOpened.textContent = showOpenedAdopt ? `采纳开封后 (${dual.opened.date})` : '采纳开封后推算';
@@ -1041,13 +1051,17 @@ export function openProductFormSheet({ store, sheet, toast, productId = null, on
   const initUnitInfo = findSubCategoryInfo(initPrimaryId, initSubId);
   const defaultCur = store.state.settings.homeSelectedCurrency || 'CNY';
 
-  const specParts = existing
+  const rawSpecParts = existing
     ? {
         value: existing.specificationValue ?? parseSpecificationParts(existing.specification).value,
         unit: existing.specificationUnit ?? parseSpecificationParts(existing.specification).unit,
         customUnit: existing.specificationCustomUnit ?? parseSpecificationParts(existing.specification).customUnit,
       }
     : { value: '', unit: 'ml', customUnit: '' };
+  const specParts =
+    rawSpecParts.unit && !['ml', 'g', '其他'].includes(rawSpecParts.unit)
+      ? { value: rawSpecParts.value, unit: '其他', customUnit: rawSpecParts.customUnit || rawSpecParts.unit }
+      : rawSpecParts;
 
   let selectedCatId = initPrimaryId;
   let selectedSubId = initSubId;
@@ -1127,7 +1141,6 @@ export function openProductFormSheet({ store, sheet, toast, productId = null, on
           <select class="select" name="specificationUnit" id="f-spec-unit">
             <option value="">不填</option>
             ${['ml', 'g'].map((u) => `<option value="${esc(u)}" ${specParts.unit === u ? 'selected' : ''}>${esc(u)}</option>`).join('')}
-            ${SPEC_UNITS.filter((u) => u !== 'ml' && u !== 'g').map((u) => `<option value="${esc(u)}" ${specParts.unit === u ? 'selected' : ''}>${esc(u)}</option>`).join('')}
             <option value="其他" ${specParts.unit === '其他' ? 'selected' : ''}>其他（自定义）</option>
           </select>
         </div>
@@ -1687,6 +1700,7 @@ export function openItemFormSheet({ store, sheet, dialog, toast, productId, item
 
 function openMarkUsedUpSheet({ store, item, sheet, toast, viewState, actions }) {
   const defaultDate = item.usedUpDate || todayStr();
+  const minUsedUpDate = [item.manufactureDate, item.openedDate].filter(Boolean).sort().pop() || '';
   sheet.open({
     title: '确认产品已用完？',
     bodyHtml: `
@@ -1697,7 +1711,7 @@ function openMarkUsedUpSheet({ store, item, sheet, toast, viewState, actions }) 
         </div>
         <div class="field">
           <label>用完日期 <span class="req">*</span></label>
-          <input class="input" type="date" name="usedUpDate" value="${esc(defaultDate)}" required />
+          <input class="input" type="date" name="usedUpDate" min="${esc(minUsedUpDate)}" value="${esc(defaultDate)}" required />
         </div>
         <div class="card-muted" style="padding:9px 11px;font-size:12px;color:var(--text-secondary);" data-uu-duration-box></div>
         <div class="field-row">
@@ -1786,7 +1800,7 @@ function openConfirmOpenTodaySheet({ store, prod, item, sheet, toast, actions })
         <div class="field-row">
           <div class="field">
             <label>开封日期 <span class="req">*</span></label>
-            <input class="input" type="date" name="openedDate" value="${esc(initOpened)}" required />
+            <input class="input" type="date" name="openedDate" min="${esc(item.manufactureDate || '')}" value="${esc(initOpened)}" required />
           </div>
           <div class="field">
             <label>开封后期限 PAO（月）</label>
@@ -1797,7 +1811,7 @@ function openConfirmOpenTodaySheet({ store, prod, item, sheet, toast, actions })
         <div class="field">
           <label>确认到期日（如需重新编辑可直接修改）</label>
           <input class="input" type="date" name="confirmedExpiryDate" value="${esc(item.confirmedExpiryDate || '')}" />
-          <div class="row-wrap" style="margin-top:6px;">
+          <div class="adopt-btn-row" style="margin-top:6px;">
             <button type="button" class="btn btn-soft btn-sm" data-ot-adopt-opened>采纳开封后推算</button>
             <button type="button" class="btn btn-secondary btn-sm" data-ot-clear-conf style="display:${item.confirmedExpiryDate ? '' : 'none'};">清空原确认（改按推算）</button>
           </div>
@@ -1821,19 +1835,22 @@ function openConfirmOpenTodaySheet({ store, prod, item, sheet, toast, actions })
       const refresh = () => {
         const openedVal = String(openedInp?.value || '').trim();
         const paoRaw = String(paoInp?.value || '').trim();
+        const openedBeforeMfg = Boolean(item.manufactureDate && openedVal && openedVal < item.manufactureDate);
         const dual = deriveDualComputedExpiry({
           ...item,
-          openedDate: openedVal || null,
+          openedDate: openedBeforeMfg ? null : (openedVal || null),
           paoMonths: /^\d+$/.test(paoRaw) ? Number.parseInt(paoRaw, 10) : null,
         });
         if (previewEl) {
-          previewEl.textContent = dual.opened.date
-            ? `开封后推算到期：${dual.opened.date}（${dual.opened.formula}）`
-            : '尚未填写开封后期限（PAO），如需重算到期日可补充 PAO 或直接修改上方确认到期日。';
+          previewEl.textContent = openedBeforeMfg
+            ? `开封日期（${openedVal}）不能早于生产日期（${item.manufactureDate}）。`
+            : dual.opened.date
+              ? `开封后推算到期：${dual.opened.date}（${dual.opened.formula}）`
+              : '尚未填写开封后期限（PAO），如需重算到期日可补充 PAO 或直接修改上方确认到期日。';
         }
         if (adoptBtn) {
-          adoptBtn.disabled = !dual.opened.date;
-          adoptBtn.style.display = dual.opened.date ? '' : 'none';
+          adoptBtn.disabled = openedBeforeMfg || !dual.opened.date;
+          adoptBtn.style.display = !openedBeforeMfg && dual.opened.date ? '' : 'none';
           adoptBtn.textContent = dual.opened.date ? `采纳开封后 (${dual.opened.date})` : '采纳开封后推算';
         }
         if (clearBtn) {
@@ -2134,7 +2151,7 @@ export function bindBoxEvents(container, { store, viewState, actions, sheet, dia
                 </div>
                 <div class="field">
                   <label>开封日期 <span class="req">*</span></label>
-                  <input class="input" type="date" name="openedDate" value="${esc(it.openedDate || todayStr())}" required />
+                  <input class="input" type="date" name="openedDate" min="${esc(it.manufactureDate || '')}" value="${esc(it.openedDate || todayStr())}" required />
                 </div>
               </div>
               <div class="field-row">
