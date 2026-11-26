@@ -15,11 +15,14 @@ import {
   composeProductDisplayName,
   createC1InitialState,
   describeC1ItemDualExpiry,
+  evaluateC1QuickStatusOption,
   findCategoryNames,
   formatC1Price,
   formatSpecDisplay,
-  getAllowedC1Statuses,
+  hasC1LifecycleRecord,
+  resolveC1ItemExpiryForDisplay,
   summarizeProductCounts,
+  validateC1ItemTransitionAndFields,
 } from './c1-mock-data.js';
 import { CURRENCIES, CURRENCY_ORDER, minorToDecimalString, parseAmountToMinor } from './currency.js';
 import { expiryStatus, resolveExpiry, todayStr } from './expiry.js';
@@ -343,15 +346,21 @@ function renderDetailView() {
   const renderItemCard = (item, idx, isHistory = false) => {
     const stObj = C1_ITEM_STATUSES[item.status] || C1_ITEM_STATUSES.unrecorded;
     const isExpanded = ui.expandedItemIds.has(item.id);
-    const dual = describeC1ItemDualExpiry(item);
-    const resolved = resolveExpiry(item);
+    const resolved = resolveC1ItemExpiryForDisplay(item);
     const expSt = expiryStatus(resolved, today, nearDays);
     const priceText = formatC1Price(item.purchasePriceMinor, item.currencyCode);
 
     let shortExpiry = '未记录有效期';
-    if (item.confirmedExpiryDate) shortExpiry = `到期 ${item.confirmedExpiryDate}`;
-    else if (dual.opened.date) shortExpiry = `开封后 ${dual.opened.date}`;
-    else if (dual.unopened.date) shortExpiry = `未开封 ${dual.unopened.date}`;
+    if (resolved.date) {
+      shortExpiry = resolved.source === 'confirmed' ? `到期 ${resolved.date}` : `参考到期 ${resolved.date}`;
+    }
+
+    const statusOptions = [
+      { key: 'unrecorded', label: '未记录' },
+      { key: 'unopened', label: '未开封' },
+      { key: 'in_use', label: '使用中' },
+      { key: 'used_up', label: '已用完' },
+    ];
 
     return `
       <div class="card" style="padding:12px 14px;">
@@ -359,8 +368,8 @@ function renderDetailView() {
           <div class="row-wrap" style="gap:6px;">
             <strong style="font-size:14px;">第 ${idx + 1} ${esc(unit)}</strong>
             <span class="pill ${esc(stObj.pillClass)}">${esc(stObj.label)}</span>
-            ${!isHistory && expSt.key === 'near' ? `<span class="pill pill-amber">${esc(expSt.label)}</span>` : ''}
-            ${!isHistory && expSt.key === 'expired' ? `<span class="pill pill-danger">${esc(expSt.label)}</span>` : ''}
+            ${expSt.key === 'near' ? `<span class="pill pill-amber">${esc(expSt.label)}</span>` : ''}
+            ${expSt.key === 'expired' ? `<span class="pill pill-danger">${esc(expSt.label)}</span>` : ''}
           </div>
           <button type="button" class="ghost-mini-btn" data-c1-expand-item="${esc(item.id)}">
             ${isExpanded ? '收起 ▴' : '展开详情 ▾'}
@@ -382,30 +391,28 @@ function renderDetailView() {
             <div>购买记录：${priceText ? esc(priceText) : '未填金额'}${item.acquisitionMethod ? ` · ${esc(item.acquisitionMethod)}` : ''}</div>
           </div>
 
-          ${(() => {
-            const allowed = getAllowedC1Statuses(item);
-            return `
-              <div class="stack-sm" style="margin-top:10px;">
-                <div class="row-between">
-                  <span style="font-size:12px;color:var(--text-tertiary);">快速改状态</span>
-                  ${!allowed.unopened ? `<span style="font-size:11px;color:var(--text-tertiary);">已填开封日期，不可改为未开封</span>` : ''}
-                </div>
-                <div class="segmented">
-                  <button type="button" class="seg-btn ${item.status === 'unrecorded' ? 'is-active' : ''}" data-c1-set-status="${esc(item.id)}:unrecorded" ${allowed.unrecorded ? '' : 'disabled'}>未记录</button>
-                  <button type="button" class="seg-btn ${item.status === 'unopened' ? 'is-active' : ''}" data-c1-set-status="${esc(item.id)}:unopened" ${allowed.unopened ? '' : 'disabled'}>未开封</button>
-                  <button type="button" class="seg-btn ${item.status === 'in_use' ? 'is-active' : ''}" data-c1-set-status="${esc(item.id)}:in_use">使用中</button>
-                  <button type="button" class="seg-btn ${item.status === 'used_up' ? 'is-active' : ''}" data-c1-mark-usedup="${esc(item.id)}">已用完</button>
-                </div>
-                <div class="row-between" style="margin-top:6px;gap:8px;">
-                  <button type="button" class="btn btn-secondary btn-sm" data-c1-edit-item="${esc(item.id)}">编辑详细信息</button>
-                  ${item.status === 'unopened'
-                    ? `<button type="button" class="btn btn-soft btn-sm" data-c1-open-today="${esc(item.id)}">今日开封</button>`
-                    : ''}
-                  <button type="button" class="ghost-mini-btn" data-c1-remove-item="${esc(item.id)}" style="color:var(--danger);border-color:rgba(180,75,75,0.28);margin-left:auto;">删掉这 1 ${esc(unit)}</button>
-                </div>
-              </div>
-            `;
-          })()}
+          <div class="stack-sm" style="margin-top:10px;">
+            <div class="row-between">
+              <span style="font-size:12px;color:var(--text-tertiary);">快速改状态</span>
+              <span style="font-size:11px;color:var(--text-tertiary);">浅色虚线项不可选，点击可看原因</span>
+            </div>
+            <div class="segmented c1-status-bar">
+              ${statusOptions
+                .map((opt) => {
+                  const ev = evaluateC1QuickStatusOption(item, opt.key);
+                  const cls = ev.isCurrent ? 'is-active' : ev.allowed ? '' : 'is-unavailable';
+                  return `<button type="button" class="seg-btn ${cls}" data-c1-status-action="${esc(item.id)}:${opt.key}" aria-pressed="${ev.isCurrent}" aria-disabled="${!ev.allowed}">${opt.label}</button>`;
+                })
+                .join('')}
+            </div>
+            <div class="row-between" style="margin-top:6px;gap:8px;">
+              <button type="button" class="btn btn-secondary btn-sm" data-c1-edit-item="${esc(item.id)}">编辑详细信息</button>
+              ${item.status === 'unopened'
+                ? `<button type="button" class="btn btn-soft btn-sm" data-c1-open-today="${esc(item.id)}">今日开封</button>`
+                : ''}
+              <button type="button" class="ghost-mini-btn" data-c1-remove-item="${esc(item.id)}" style="color:var(--danger);border-color:rgba(180,75,75,0.28);margin-left:auto;">删掉这 1 ${esc(unit)}</button>
+            </div>
+          </div>
         ` : ''}
       </div>
     `;
@@ -599,19 +606,133 @@ function bindDetailEvents(prod, sum, unit) {
     });
   });
 
-  mainEl.querySelectorAll('[data-c1-set-status]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      if (btn.disabled) return;
-      const [id, nextStatus] = btn.dataset.c1SetStatus.split(':');
+  mainEl.querySelectorAll('[data-c1-status-action]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const [id, nextStatus] = btn.dataset.c1StatusAction.split(':');
       const it = state.items.find((x) => x.id === id);
       if (!it) return;
-      const allowed = getAllowedC1Statuses(it);
-      if (!allowed[nextStatus]) {
-        toast('已有相关记录或开封日期时，不能切换为该状态');
+      const evalRes = evaluateC1QuickStatusOption(it, nextStatus);
+      if (evalRes.isCurrent) return;
+      if (!evalRes.allowed) {
+        toast(evalRes.reason || '当前产品状态不支持此操作。');
         return;
       }
-      it.status = nextStatus;
-      toast(`已切换为「${C1_ITEM_STATUSES[nextStatus]?.label || nextStatus}」`);
+
+      if (evalRes.requiresConfirm === 'mark_used_up') {
+        const ok = await dialog.confirm({
+          title: '确认产品已用完？',
+          message: '标记为已用完后，该瓶产品将从当前拥有数量中移除，但历史记录和使用信息仍会保留。',
+          confirmLabel: '确认已用完',
+          cancelLabel: '取消',
+        });
+        if (!ok) return;
+        it.status = 'used_up';
+        it.remainingPercent = 0;
+        ui.expandedItemIds.delete(it.id);
+        toast('已标记为已用完（已从当前拥有移出，历史记录保留）');
+        render();
+        return;
+      }
+
+      if (evalRes.requiresConfirm === 'restore_unopened') {
+        const ok = await dialog.confirm({
+          title: '确认恢复为未开封？',
+          message: '切换后将清空原开封日期，并重新按照生产日期和未开封保质期计算到期日。',
+          confirmLabel: '确认恢复未开封',
+          cancelLabel: '取消',
+        });
+        if (!ok) return;
+        it.status = 'unopened';
+        it.openedDate = null;
+        if (it.confirmedExpiryDate) {
+          toast('已恢复为未开封并清空开封日期；已保留您的确认到期日，请核实是否正确');
+        } else {
+          toast('已恢复为未开封，已清空原开封日期');
+        }
+        render();
+        return;
+      }
+
+      if (evalRes.requiresConfirm === 'restore_in_use') {
+        sheet.open({
+          title: '确认恢复使用？',
+          bodyHtml: `
+            <form id="c1-restore-use-form" class="form-stack" novalidate>
+              <div id="c1-ru-err" class="form-banner-error" style="display:none;"></div>
+              <div class="form-banner-info">
+                恢复后，该瓶产品将重新计入当前拥有数量。请确认产品仍有剩余，并补充当前剩余比例。
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label>当前剩余比例（1–100%）<span class="req">*</span></label>
+                  <input class="input" type="number" min="1" max="100" name="remainingPercent" value="${it.remainingPercent > 0 ? it.remainingPercent : 50}" required />
+                </div>
+                <div class="field">
+                  <label>开封日期 <span class="req">*</span></label>
+                  <input class="input" type="date" name="openedDate" value="${esc(it.openedDate || todayStr())}" required />
+                </div>
+              </div>
+              <div class="field-row">
+                <button type="button" class="btn btn-secondary" data-ru-cancel="1">取消</button>
+                <button type="submit" class="btn btn-primary">确认恢复使用</button>
+              </div>
+            </form>
+          `,
+          onMount: (body, close) => {
+            const f = body.querySelector('#c1-restore-use-form');
+            const errBox = body.querySelector('#c1-ru-err');
+            body.querySelector('[data-ru-cancel]')?.addEventListener('click', close);
+            f.addEventListener('submit', (e) => {
+              e.preventDefault();
+              errBox.style.display = 'none';
+              const fd = new FormData(f);
+              const check = validateC1ItemTransitionAndFields({
+                previousItem: it,
+                nextInput: {
+                  ...it,
+                  status: 'in_use',
+                  remainingPercent: fd.get('remainingPercent'),
+                  openedDate: fd.get('openedDate'),
+                },
+              });
+              if (!check.ok) {
+                showFormError(errBox, check.error, toast);
+                return;
+              }
+              it.status = 'in_use';
+              it.remainingPercent = check.normalized.remainingPercent;
+              it.openedDate = check.normalized.openedDate;
+              ui.expandedItemIds.add(it.id);
+              close();
+              toast('已恢复为使用中，已重新计入当前拥有数量');
+              render();
+            });
+          },
+        });
+        return;
+      }
+
+      // 直接合法切换（如：未记录 -> 未开封 / 使用中，未开封 -> 使用中）
+      const nextOpened = nextStatus === 'in_use' ? (it.openedDate || todayStr()) : null;
+      const check = validateC1ItemTransitionAndFields({
+        previousItem: it,
+        nextInput: {
+          ...it,
+          status: nextStatus,
+          openedDate: nextOpened,
+        },
+      });
+      if (!check.ok) {
+        toast(check.error);
+        return;
+      }
+      it.status = check.normalized.status;
+      it.openedDate = check.normalized.openedDate;
+      toast(
+        nextStatus === 'in_use'
+          ? '已设为「使用中」并记录有效开封日期'
+          : `已切换为「${C1_ITEM_STATUSES[nextStatus]?.label || nextStatus}」`,
+      );
       render();
     });
   });
@@ -623,17 +744,6 @@ function bindDetailEvents(prod, sum, unit) {
       it.status = 'in_use';
       if (!it.openedDate) it.openedDate = todayStr();
       toast('已设为「使用中」并记录今日开封日期');
-      render();
-    });
-  });
-
-  mainEl.querySelectorAll('[data-c1-mark-usedup]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const it = state.items.find((x) => x.id === btn.dataset.c1MarkUsedup);
-      if (!it) return;
-      it.status = 'used_up';
-      it.remainingPercent = 0;
-      toast('已标记用完（已从当前拥有移出，保留在历史记录中）');
       render();
     });
   });
@@ -1360,16 +1470,28 @@ function openAddOrEditProductSheet(existing = null) {
             }
             minor = parsed.minor;
           }
+          const check = validateC1ItemTransitionAndFields({
+            previousItem: null,
+            nextInput: {
+              ...src,
+              purchasePriceMinor: minor,
+              acquisitionMethod: src.acquisitionPreset || '',
+            },
+          });
+          if (!check.ok) {
+            showFormError(errBox, `第 ${i + 1} 件校验未通过：${check.error}`, toast);
+            return;
+          }
           createdItems.push({
             id: uid('c1-i'),
             productId: newProd.id,
-            status: src.status || 'unrecorded',
-            manufactureDate: src.manufactureDate || null,
-            unopenedShelfMonths: src.unopenedShelfMonths ? Number.parseInt(src.unopenedShelfMonths, 10) : null,
-            openedDate: src.openedDate || null,
-            paoMonths: src.paoMonths ? Number.parseInt(src.paoMonths, 10) : null,
-            confirmedExpiryDate: src.confirmedExpiryDate || null,
-            remainingPercent: Number.isFinite(Number(src.remainingPercent)) ? Number(src.remainingPercent) : 100,
+            status: check.normalized.status,
+            manufactureDate: check.normalized.manufactureDate,
+            unopenedShelfMonths: check.normalized.unopenedShelfMonths,
+            openedDate: check.normalized.openedDate,
+            paoMonths: check.normalized.paoMonths,
+            confirmedExpiryDate: check.normalized.confirmedExpiryDate,
+            remainingPercent: check.normalized.remainingPercent,
             purchasePriceMinor: minor,
             currencyCode: src.currencyCode || state.settings.defaultCurrency || 'CNY',
             acquisitionMethod: src.acquisitionPreset || '',
@@ -1421,14 +1543,31 @@ function openEditSingleItemSheet(prod, item) {
       const errBox = body.querySelector('#c1-si-err');
       const box = body.querySelector('[data-draft-idx="0"]');
       if (box) bindDraftExpiryHelpers(box, draft);
+      const statusSel = box?.querySelector('[data-df="status"]');
+      const openedInp = box?.querySelector('[data-df="openedDate"]');
+      const remInp = box?.querySelector('[data-df="remainingPercent"]');
+
       body.querySelectorAll('[data-df]').forEach((inp) => {
         const ev = inp.tagName === 'SELECT' ? 'change' : 'input';
         inp.addEventListener(ev, () => {
           draft[inp.dataset.df] = inp.value;
+          if (inp === statusSel) {
+            if (inp.value === 'in_use' && !draft.openedDate) {
+              const t = todayStr();
+              draft.openedDate = t;
+              if (openedInp) {
+                openedInp.value = t;
+                openedInp.dispatchEvent(new Event('input'));
+              }
+            } else if (inp.value === 'used_up') {
+              draft.remainingPercent = 0;
+              if (remInp) remInp.value = '0';
+            }
+          }
         });
       });
 
-      form.addEventListener('submit', (e) => {
+      form.addEventListener('submit', async (e) => {
         e.preventDefault();
         errBox.style.display = 'none';
         let minor = null;
@@ -1440,18 +1579,71 @@ function openEditSingleItemSheet(prod, item) {
           }
           minor = parsed.minor;
         }
-        item.status = draft.status;
-        item.remainingPercent = Math.max(0, Math.min(100, Number.parseInt(String(draft.remainingPercent || 100), 10) || 0));
-        item.manufactureDate = draft.manufactureDate || null;
-        item.unopenedShelfMonths = draft.unopenedShelfMonths ? Number.parseInt(String(draft.unopenedShelfMonths), 10) : null;
-        item.openedDate = draft.openedDate || null;
-        item.paoMonths = draft.paoMonths ? Number.parseInt(String(draft.paoMonths), 10) : null;
-        item.confirmedExpiryDate = draft.confirmedExpiryDate || null;
+
+        // 若从「使用中」改回「未开封」且仍留着开封日期，则弹出确认框并在确认后清空开封日期
+        let nextOpenedInput = draft.openedDate;
+        if (item.status === 'in_use' && draft.status === 'unopened' && String(nextOpenedInput || '').trim()) {
+          const ok = await dialog.confirm({
+            title: '确认恢复为未开封？',
+            message: '切换后将清空原开封日期，并重新按照生产日期和未开封保质期计算到期日。',
+            confirmLabel: '确认恢复未开封',
+            cancelLabel: '取消',
+          });
+          if (!ok) return;
+          nextOpenedInput = '';
+          draft.openedDate = '';
+          if (openedInp) openedInp.value = '';
+        }
+
+        const check = validateC1ItemTransitionAndFields({
+          previousItem: item,
+          nextInput: {
+            ...draft,
+            openedDate: nextOpenedInput,
+            purchasePriceMinor: minor,
+            acquisitionMethod: draft.acquisitionPreset || '',
+          },
+        });
+        if (!check.ok) {
+          showFormError(errBox, check.error, toast);
+          return;
+        }
+
+        const needsRestoreConfirm = item.status === 'used_up' && check.normalized.status === 'in_use';
+        if (needsRestoreConfirm) {
+          const ok = await dialog.confirm({
+            title: '确认恢复使用？',
+            message: '恢复后，该瓶产品将重新计入当前拥有数量。确认保持以上剩余比例并恢复使用？',
+            confirmLabel: '确认恢复使用',
+            cancelLabel: '取消',
+          });
+          if (!ok) return;
+        }
+
+        if (check.normalized.status === 'used_up' && item.status !== 'used_up') {
+          const ok = await dialog.confirm({
+            title: '确认产品已用完？',
+            message: '标记为已用完后，该瓶产品将从当前拥有数量中移除，但历史记录和使用信息仍会保留。',
+            confirmLabel: '确认已用完',
+            cancelLabel: '取消',
+          });
+          if (!ok) return;
+        }
+
+        item.status = check.normalized.status;
+        item.remainingPercent = check.normalized.remainingPercent;
+        item.manufactureDate = check.normalized.manufactureDate;
+        item.unopenedShelfMonths = check.normalized.unopenedShelfMonths;
+        item.openedDate = check.normalized.openedDate;
+        item.paoMonths = check.normalized.paoMonths;
+        item.confirmedExpiryDate = check.normalized.confirmedExpiryDate;
         item.purchasePriceMinor = minor;
         item.currencyCode = draft.currencyCode || 'CNY';
         item.acquisitionMethod = draft.acquisitionPreset || '';
         close();
-        toast('已更新这 1 件的详细信息');
+        toast(item.confirmedExpiryDate && item.status === 'unopened'
+          ? '已更新信息；已保留您的确认到期日，请核实是否正确'
+          : '已更新这 1 件的详细信息');
         render();
       });
     },

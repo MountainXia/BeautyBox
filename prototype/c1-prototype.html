@@ -32,6 +32,32 @@
       opacity: 0.42;
       cursor: not-allowed;
     }
+    /* C1 快速改状态三态区分：当前选中 / 可点击切换 / 不可选弱化（点击弹窗提示原因） */
+    .c1-status-bar {
+      gap: 4px;
+      padding: 4px;
+    }
+    .c1-status-bar .seg-btn {
+      color: var(--text-primary);
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.55);
+      border: 1px solid transparent;
+    }
+    .c1-status-bar .seg-btn.is-active {
+      background: var(--bg-card);
+      color: var(--accent);
+      border-color: var(--accent);
+      font-weight: 700;
+      box-shadow: 0 1px 4px rgba(157, 104, 101, 0.18);
+    }
+    .c1-status-bar .seg-btn.is-unavailable {
+      opacity: 0.35;
+      background: transparent;
+      color: var(--text-tertiary);
+      font-weight: 400;
+      border: 1px dashed rgba(35, 31, 29, 0.16);
+      box-shadow: none;
+    }
   </style>
 </head>
 <body>

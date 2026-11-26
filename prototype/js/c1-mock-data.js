@@ -153,7 +153,7 @@ export function summarizeProductCounts(product, items, { today = todayStr(), nea
     else if (item.status === 'unopened') unopenedCount += 1;
     else if (item.status === 'unrecorded') unrecordedCount += 1;
 
-    const resolved = resolveExpiry(item);
+    const resolved = resolveC1ItemExpiryForDisplay(item);
     const st = expiryStatus(resolved, today, nearDays);
     if (st.key === 'near') nearExpiryCount += 1;
     else if (st.key === 'expired') expiredCount += 1;
@@ -369,26 +369,206 @@ export function describeC1ItemDualExpiry(item) {
 }
 
 /**
- * 校验单个产品可选的状态流转（防止逻辑矛盾）：
- * - 已有开封日期 -> 不可选「未记录」或「未开封」
- * - 已有任意详细信息或已脱离未记录 -> 不可回退为「未记录」
+ * 解析当前单瓶在列表/详情徽标展示用的到期参考（遵循：用户确认优先；否则按当前状态采用未开封或开封后独立推算）
  */
-export function getAllowedC1Statuses(item) {
-  const hasOpened = Boolean(item?.openedDate);
-  const hasDetails = Boolean(
-    item?.manufactureDate ||
-      item?.unopenedShelfMonths ||
-      item?.openedDate ||
-      item?.paoMonths ||
-      item?.confirmedExpiryDate ||
-      (item?.purchasePriceMinor !== null && item?.purchasePriceMinor !== undefined && item?.purchasePriceMinor !== '') ||
-      item?.acquisitionMethod,
+export function resolveC1ItemExpiryForDisplay(item) {
+  if (item?.confirmedExpiryDate) {
+    return { source: 'confirmed', date: item.confirmedExpiryDate, candidates: [] };
+  }
+  const dual = deriveDualComputedExpiry(item);
+  if (item?.status === 'unopened') {
+    return dual.unopened.date
+      ? { source: 'computed', date: dual.unopened.date, candidates: [dual.unopened] }
+      : { source: 'none', date: null, candidates: [] };
+  }
+  if (item?.status === 'in_use') {
+    if (dual.opened.date) {
+      return { source: 'computed', date: dual.opened.date, candidates: [dual.opened] };
+    }
+    if (dual.unopened.date) {
+      return { source: 'computed', date: dual.unopened.date, candidates: [dual.unopened] };
+    }
+    return { source: 'none', date: null, candidates: [] };
+  }
+  return resolveExpiry(item);
+}
+
+/**
+ * 判断单瓶是否已经存在生命周期或购买记录（有记录则不允许再切回或保存为「未记录」）
+ */
+export function hasC1LifecycleRecord(item) {
+  if (!item) return false;
+  const hasPrice =
+    (item.purchasePriceMinor !== null && item.purchasePriceMinor !== undefined && item.purchasePriceMinor !== '') ||
+    String(item.purchasePriceInput || '').trim() !== '';
+  const hasRemainingUsed =
+    item.remainingPercent !== undefined &&
+    item.remainingPercent !== null &&
+    item.remainingPercent !== '' &&
+    Number(item.remainingPercent) !== 100;
+  return Boolean(
+    item.manufactureDate ||
+      item.unopenedShelfMonths ||
+      item.openedDate ||
+      item.paoMonths ||
+      item.confirmedExpiryDate ||
+      hasPrice ||
+      item.acquisitionMethod ||
+      item.acquisitionPreset ||
+      hasRemainingUsed,
   );
+}
+
+/**
+ * 统一的状态切换可用性与原因校验（供快速改状态 UI 与点击反馈共用）
+ */
+export function evaluateC1QuickStatusOption(item, targetStatus) {
+  const cur = item?.status || 'unrecorded';
+  if (cur === targetStatus) {
+    return { allowed: true, isCurrent: true, requiresConfirm: false, reason: '' };
+  }
+
+  if (targetStatus === 'unrecorded') {
+    if (cur !== 'unrecorded' || hasC1LifecycleRecord(item)) {
+      return {
+        allowed: false,
+        isCurrent: false,
+        requiresConfirm: false,
+        reason: '已有生命周期记录，不能恢复为未记录。',
+      };
+    }
+    return { allowed: true, isCurrent: false, requiresConfirm: false, reason: '' };
+  }
+
+  if (targetStatus === 'unopened') {
+    if (cur === 'used_up') {
+      return {
+        allowed: false,
+        isCurrent: false,
+        requiresConfirm: false,
+        reason: '当前产品状态不支持此操作，已用完请先恢复为使用中。',
+      };
+    }
+    if (cur === 'in_use') {
+      return {
+        allowed: true,
+        isCurrent: false,
+        requiresConfirm: 'restore_unopened',
+        reason: '',
+      };
+    }
+    return { allowed: true, isCurrent: false, requiresConfirm: false, reason: '' };
+  }
+
+  if (targetStatus === 'in_use') {
+    if (cur === 'used_up') {
+      return {
+        allowed: true,
+        isCurrent: false,
+        requiresConfirm: 'restore_in_use',
+        reason: '',
+      };
+    }
+    return { allowed: true, isCurrent: false, requiresConfirm: false, reason: '' };
+  }
+
+  if (targetStatus === 'used_up') {
+    return {
+      allowed: true,
+      isCurrent: false,
+      requiresConfirm: 'mark_used_up',
+      reason: '',
+    };
+  }
+
   return {
-    unrecorded: !hasOpened && !hasDetails && item?.status === 'unrecorded',
-    unopened: !hasOpened,
-    in_use: true,
-    used_up: true,
+    allowed: false,
+    isCurrent: false,
+    requiresConfirm: false,
+    reason: '当前产品状态不支持此操作。',
+  };
+}
+
+/**
+ * 统一的保存前状态与日期一致性校验（编辑详情与快速修改共用）
+ */
+export function validateC1ItemTransitionAndFields({ previousItem = null, nextInput }) {
+  const targetStatus = nextInput?.status || 'unrecorded';
+  const openedDate = String(nextInput?.openedDate || '').trim() || null;
+  const manufactureDate = String(nextInput?.manufactureDate || '').trim() || null;
+  const unopenedShelfMonths = nextInput?.unopenedShelfMonths
+    ? Number.parseInt(String(nextInput.unopenedShelfMonths), 10)
+    : null;
+  const paoMonths = nextInput?.paoMonths ? Number.parseInt(String(nextInput.paoMonths), 10) : null;
+  const confirmedExpiryDate = String(nextInput?.confirmedExpiryDate || '').trim() || null;
+
+  if (!C1_ITEM_STATUSES[targetStatus]) {
+    return { ok: false, error: '请选择有效的使用状态。' };
+  }
+
+  if (targetStatus === 'unrecorded') {
+    const prevHadLifecycle =
+      Boolean(previousItem && previousItem.status && previousItem.status !== 'unrecorded') ||
+      hasC1LifecycleRecord(previousItem);
+    const nextHasLifecycle = hasC1LifecycleRecord({
+      ...nextInput,
+      manufactureDate,
+      unopenedShelfMonths,
+      openedDate,
+      paoMonths,
+      confirmedExpiryDate,
+    });
+    if (prevHadLifecycle || nextHasLifecycle) {
+      return { ok: false, error: '已有生命周期记录，不能恢复为未记录。' };
+    }
+  }
+
+  if (targetStatus === 'unopened') {
+    if (previousItem && previousItem.status === 'used_up') {
+      return { ok: false, error: '已用完产品不能直接改为未开封，请先恢复为使用中。' };
+    }
+    if (openedDate) {
+      return { ok: false, error: '未开封状态不能保留开封日期，请先清空开封日期或选择「使用中」。' };
+    }
+  }
+
+  if (targetStatus === 'in_use') {
+    if (!openedDate) {
+      return { ok: false, error: '「使用中」状态必须填写有效的开封日期。' };
+    }
+  }
+
+  const remainingRaw =
+    nextInput?.remainingPercent === '' || nextInput?.remainingPercent === null || nextInput?.remainingPercent === undefined
+      ? (targetStatus === 'used_up' ? 0 : 100)
+      : Number.parseInt(String(nextInput.remainingPercent), 10);
+  if (!Number.isInteger(remainingRaw) || remainingRaw < 0 || remainingRaw > 100) {
+    return { ok: false, error: '剩余比例必须在 0 到 100 之间。' };
+  }
+  if (previousItem?.status === 'used_up' && targetStatus === 'in_use' && remainingRaw <= 0) {
+    return { ok: false, error: '恢复使用中时，剩余比例必须大于 0%。' };
+  }
+
+  return {
+    ok: true,
+    normalized: {
+      status: targetStatus,
+      manufactureDate,
+      unopenedShelfMonths,
+      openedDate,
+      paoMonths,
+      confirmedExpiryDate,
+      remainingPercent: targetStatus === 'used_up' ? 0 : remainingRaw,
+    },
+  };
+}
+
+export function getAllowedC1Statuses(item) {
+  return {
+    unrecorded: evaluateC1QuickStatusOption(item, 'unrecorded').allowed,
+    unopened: evaluateC1QuickStatusOption(item, 'unopened').allowed,
+    in_use: evaluateC1QuickStatusOption(item, 'in_use').allowed,
+    used_up: evaluateC1QuickStatusOption(item, 'used_up').allowed,
   };
 }
 
