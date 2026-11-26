@@ -27,7 +27,7 @@ import {
   resolveC1ItemExpiryForDisplay,
   summarizeProductCounts,
   validateC1ItemTransitionAndFields,
-} from './c1-mock-data.js';
+} from './c1-mock-data.js?v=2026112602';
 import { CURRENCIES, CURRENCY_ORDER, minorToDecimalString, parseAmountToMinor } from './currency.js';
 import { expiryStatus, resolveExpiry, todayStr } from './expiry.js';
 import { buildCategoryPlaceholderUrl, getSampleArtworkOptions, validateImageFile } from './assets.js';
@@ -615,9 +615,9 @@ function renderDetailView() {
           </button>
         </div>
 
-        <div class="row-between" style="margin-top:8px;font-size:12px;color:var(--text-secondary);gap:8px;">
-          <span>${esc(compactLeft)}</span>
-          <span style="text-align:right;">${esc(compactRight)}</span>
+        <div class="row-between" style="margin-top:8px;font-size:12px;color:var(--text-secondary);gap:4px 8px;flex-wrap:wrap;">
+          <span style="white-space:nowrap;">${esc(compactLeft)}</span>
+          <span style="text-align:right;white-space:nowrap;">${esc(compactRight)}</span>
         </div>
 
         ${isExpanded ? `
@@ -695,15 +695,15 @@ function renderDetailView() {
         <div class="row-between" style="gap:10px;">
           <div>
             <div style="font-weight:700;font-size:15px;">当前拥有：${sum.heldCount} ${esc(unit)}</div>
-            <div class="muted-note" style="margin-top:2px;">
+            <div class="muted-note row-wrap" style="margin-top:2px;gap:2px 6px;">
               ${sum.heldCount > 0
                 ? [
-                    sum.inUseCount ? `使用中 ${sum.inUseCount}` : '',
-                    sum.unopenedCount ? `未开封 ${sum.unopenedCount}` : '',
-                    sum.pendingStatusCount ? `待记录使用状态 ${sum.pendingStatusCount}` : '',
-                  ].filter(Boolean).join(' · ')
-                : '当前暂无在手产品'}
-              ${sum.usedUpCount > 0 ? `（历史用完 ${sum.usedUpCount} ${esc(unit)}）` : ''}
+                    sum.inUseCount ? `<span style="white-space:nowrap;">使用中 ${sum.inUseCount}</span>` : '',
+                    sum.unopenedCount ? `<span style="white-space:nowrap;">未开封 ${sum.unopenedCount}</span>` : '',
+                    sum.pendingStatusCount ? `<span style="white-space:nowrap;">待记录使用状态 ${sum.pendingStatusCount}</span>` : '',
+                  ].filter(Boolean).join('<span>·</span>')
+                : '<span style="white-space:nowrap;">当前暂无在手产品</span>'}
+              ${sum.usedUpCount > 0 ? `<span style="white-space:nowrap;">（历史用完 ${sum.usedUpCount} ${esc(unit)}）</span>` : ''}
             </div>
           </div>
           <div class="row" style="gap:6px;">
@@ -796,7 +796,7 @@ function openMarkUsedUpSheet(item) {
           <label>用完日期 <span class="req">*</span></label>
           <input class="input" type="date" name="usedUpDate" value="${esc(defaultDate)}" required />
         </div>
-        <div class="card-muted" style="padding:10px 12px;font-size:12px;color:var(--text-secondary);" data-uu-duration-box></div>
+        <div class="card-muted" style="padding:9px 11px;font-size:12px;color:var(--text-secondary);" data-uu-duration-box></div>
         <div class="field-row">
           <button type="button" class="btn btn-secondary" data-uu-cancel="1">取消</button>
           <button type="submit" class="btn btn-primary">确认已用完</button>
