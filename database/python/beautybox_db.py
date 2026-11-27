@@ -20,6 +20,9 @@ SCHEMA_V1_PATH = REPO_ROOT / "database" / "migrations" / "0001_schema_v1.sql"
 SEEDS_V1_PATH = REPO_ROOT / "database" / "seeds" / "0001_categories_v1.sql"
 
 CURRENT_SCHEMA_VERSION = 1
+MAX_MINOR_DIGITS = 15
+MAX_MINOR_VALUE = (10**MAX_MINOR_DIGITS) - 1
+PENDING_MEDIA_CLEANUP_KEY = "pending_media_cleanup_queue"
 
 # 与 prototype/js/currency.js 完全对齐的集中式离线 ISO 4217 精度字典（禁用 Float）
 CURRENCY_EXPONENTS: dict[str, int] = {
@@ -151,6 +154,14 @@ def apply_migrations(
 
     for step in ordered_steps:
         if step.version <= current_version:
+            existing = conn.execute(
+                "SELECT checksum_sha256 FROM schema_migrations WHERE version = ?;",
+                (step.version,),
+            ).fetchone()
+            if existing is not None and existing["checksum_sha256"] != step.checksum_sha256:
+                raise MigrationError(
+                    f"Migration v{step.version} ({step.migration_key}) 校验和不匹配，历史迁移脚本疑似被篡改"
+                )
             continue
         if step.version != current_version + 1:
             raise MigrationError(f"迁移版本号不连续：期望 v{current_version + 1}，实际为 v{step.version}")
@@ -184,10 +195,15 @@ def apply_migrations(
 # 金额精确解析/聚合辅助（严禁 Float）
 # -----------------------------------------------------------------------------
 def parse_decimal_to_minor(raw_amount: str, currency_code: str) -> int:
-    """将十进制字符串严格转为整数最小货币单位，拒绝未知币种或超精度小数。"""
-    if currency_code not in CURRENCY_EXPONENTS:
-        raise DomainRuleError(f"该币种暂不支持: {currency_code}")
-    exponent = CURRENCY_EXPONENTS[currency_code]
+    """将十进制字符串严格转为整数最小货币单位，拒绝 Float、未知币种、超精度小数或超限整数。"""
+    if not isinstance(raw_amount, str):
+        raise DomainRuleError(f"金额必须为十进制字符串，禁止传入 {type(raw_amount).__name__}")
+    if not isinstance(currency_code, str) or not currency_code.strip():
+        raise DomainRuleError("币种代码不能为空")
+    code = currency_code.strip()
+    if code not in CURRENCY_EXPONENTS:
+        raise DomainRuleError(f"该币种暂不支持: {code}")
+    exponent = CURRENCY_EXPONENTS[code]
     cleaned = raw_amount.strip()
     if not cleaned or cleaned.startswith("-"):
         raise DomainRuleError(f"非法金额格式: {raw_amount}")
@@ -199,24 +215,52 @@ def parse_decimal_to_minor(raw_amount: str, currency_code: str) -> int:
     if frac and not frac.isdigit():
         raise DomainRuleError(f"非法小数部分: {raw_amount}")
     if len(frac) > exponent:
-        raise DomainRuleError(f"{currency_code} 最多允许 {exponent} 位小数，拒绝静默截断: {raw_amount}")
+        raise DomainRuleError(f"{code} 最多允许 {exponent} 位小数，拒绝静默截断: {raw_amount}")
     padded_frac = frac.ljust(exponent, "0")
-    return int(whole) * (10**exponent) + (int(padded_frac) if padded_frac else 0)
+    minor = int(whole) * (10**exponent) + (int(padded_frac) if padded_frac else 0)
+    if minor > MAX_MINOR_VALUE:
+        raise DomainRuleError(f"金额超出安全整数上限（最多 {MAX_MINOR_DIGITS} 位最小单位）: {raw_amount}")
+    return minor
+
+
+def format_minor_to_decimal(minor: int, currency_code: str) -> str:
+    """将最小货币单位整数精确格式化为十进制字符串（纯整数运算，严禁 Float）。"""
+    if isinstance(minor, bool) or not isinstance(minor, int) or minor < 0:
+        raise DomainRuleError(f"非法最小货币单位整数: {minor}")
+    if currency_code not in CURRENCY_EXPONENTS:
+        raise DomainRuleError(f"该币种暂不支持: {currency_code}")
+    exp = CURRENCY_EXPONENTS[currency_code]
+    if exp == 0:
+        return str(minor)
+    scale = 10**exp
+    whole, rem = divmod(minor, scale)
+    return f"{whole}.{str(rem).zfill(exp)}"
 
 
 def get_spend_summary_by_currency(conn: sqlite3.Connection) -> dict[str, int]:
     """按币种分组统计所有已记录价格的有效消费（含已用完历史，严格不跨币种相加）。"""
-    rows = conn.execute(
-        """
-        SELECT currency_code, SUM(purchase_price_minor) AS total_minor
-        FROM product_items
-        WHERE deleted_at IS NULL
-          AND purchase_price_minor IS NOT NULL
-        GROUP BY currency_code
-        ORDER BY currency_code;
-        """
-    ).fetchall()
-    return {row["currency_code"]: int(row["total_minor"]) for row in rows}
+    try:
+        rows = conn.execute(
+            """
+            SELECT currency_code, SUM(purchase_price_minor) AS total_minor
+            FROM product_items
+            WHERE deleted_at IS NULL
+              AND purchase_price_minor IS NOT NULL
+            GROUP BY currency_code
+            ORDER BY currency_code;
+            """
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "overflow" in str(exc).lower():
+            raise DomainRuleError(f"单币种消费汇总超出 SQLite 64 位整数安全上限: {exc}") from exc
+        raise
+    result: dict[str, int] = {}
+    for row in rows:
+        total = row["total_minor"]
+        if isinstance(total, float):
+            raise DomainRuleError(f"汇总结果溢出为浮点型（{row['currency_code']}），已拦截")
+        result[row["currency_code"]] = int(total)
+    return result
 
 
 # -----------------------------------------------------------------------------
@@ -417,20 +461,117 @@ def count_asset_references(conn: sqlite3.Connection, asset_id: str) -> int:
     return int(row["total_refs"])
 
 
-def _cleanup_unreferenced_assets(conn: sqlite3.Connection, candidate_asset_ids: set[str]) -> list[str]:
-    """仅当引用计总和归零后才删除 media_assets 行并返回应由 MediaStore 清理的 relative_path。"""
+def _load_cleanup_queue(conn: sqlite3.Connection) -> list[dict]:
+    row = conn.execute(
+        "SELECT value_json FROM app_settings WHERE key = ?;",
+        (PENDING_MEDIA_CLEANUP_KEY,),
+    ).fetchone()
+    if row is None:
+        return []
+    data = json.loads(row["value_json"])
+    return data if isinstance(data, list) else []
+
+
+def _save_cleanup_queue(conn: sqlite3.Connection, queue: list[dict], now_iso: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO app_settings (key, value_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at;
+        """,
+        (PENDING_MEDIA_CLEANUP_KEY, json.dumps(queue, ensure_ascii=False), now_iso),
+    )
+
+
+def get_pending_media_cleanup_tasks(conn: sqlite3.Connection) -> list[dict]:
+    """读取当前待执行/失败待重试的沙盒文件清理任务。"""
+    return _load_cleanup_queue(conn)
+
+
+def _cleanup_unreferenced_assets(
+    conn: sqlite3.Connection, candidate_asset_ids: set[str], *, now_iso: Optional[str] = None
+) -> list[str]:
+    """
+    在同一数据库事务内执行：
+    仅当某媒体资产在全库 5 处引用总计归零后才删除 media_assets 行，
+    并将待删文件路径原子写入 app_settings['pending_media_cleanup_queue'] 供后续 MediaStore 重试清理。
+    """
+    now = now_iso or _utc_now_iso()
     removed_paths: list[str] = []
+    queue = _load_cleanup_queue(conn)
+    queued_ids = {t.get("asset_id") for t in queue}
+
     for asset_id in sorted(candidate_asset_ids):
         if not asset_id:
             continue
         if count_asset_references(conn, asset_id) == 0:
             row = conn.execute(
-                "SELECT relative_path FROM media_assets WHERE id = ?;", (asset_id,)
+                "SELECT relative_path, thumbnail_path FROM media_assets WHERE id = ?;", (asset_id,)
             ).fetchone()
             if row is not None:
                 removed_paths.append(row["relative_path"])
                 conn.execute("DELETE FROM media_assets WHERE id = ?;", (asset_id,))
+                if asset_id not in queued_ids:
+                    queue.append(
+                        {
+                            "asset_id": asset_id,
+                            "relative_path": row["relative_path"],
+                            "thumbnail_path": row["thumbnail_path"],
+                            "status": "pending",
+                            "retry_count": 0,
+                            "last_error": None,
+                            "enqueued_at": now,
+                        }
+                    )
+                    queued_ids.add(asset_id)
+
+    if removed_paths:
+        _save_cleanup_queue(conn, queue, now)
     return removed_paths
+
+
+def execute_pending_media_cleanups(
+    conn: sqlite3.Connection,
+    delete_file_fn: Callable[[str, Optional[str]], None],
+    *,
+    now_iso: Optional[str] = None,
+) -> dict[str, int]:
+    """
+    在数据库事务已提交后执行待清理文件队列（由调用方传入真实或模拟文件删除器）：
+    - 删除成功则从队列移除
+    - 删除失败保留任务并递增 retry_count 与 last_error，支持后续重试
+    """
+    now = now_iso or _utc_now_iso()
+    queue = _load_cleanup_queue(conn)
+    if not queue:
+        return {"deleted": 0, "failed": 0, "remaining": 0}
+
+    remaining: list[dict] = []
+    deleted_cnt = 0
+    failed_cnt = 0
+    for task in queue:
+        try:
+            delete_file_fn(task["relative_path"], task.get("thumbnail_path"))
+            deleted_cnt += 1
+        except Exception as exc:
+            failed_cnt += 1
+            remaining.append(
+                {
+                    **task,
+                    "status": "failed",
+                    "retry_count": int(task.get("retry_count", 0)) + 1,
+                    "last_error": str(exc),
+                }
+            )
+
+    conn.execute("BEGIN IMMEDIATE;")
+    try:
+        _save_cleanup_queue(conn, remaining, now)
+        conn.execute("COMMIT;")
+    except Exception:
+        conn.execute("ROLLBACK;")
+        raise
+    return {"deleted": deleted_cnt, "failed": failed_cnt, "remaining": len(remaining)}
 
 
 def permanent_purge_product_item(conn: sqlite3.Connection, item_id: str) -> None:
@@ -445,8 +586,16 @@ def permanent_purge_product_item(conn: sqlite3.Connection, item_id: str) -> None
         raise
 
 
-def permanent_purge_product(conn: sqlite3.Connection, product_id: str) -> list[str]:
-    """在单事务内彻底删除整款产品及其全部现存子件，保留历史妆容快照并按引用计数清理无用媒体。"""
+def permanent_purge_product(
+    conn: sqlite3.Connection,
+    product_id: str,
+    *,
+    fail_before_commit_for_test: bool = False,
+) -> list[str]:
+    """
+    在单一原子事务内彻底删除整款产品、子件并同步完成无引用 media_assets 清理与清理任务入队：
+    - 若事务中发生任意失败回滚，products、media_assets 及待删文件队列均保持原状，绝不误删图片。
+    """
     candidate_assets: set[str] = set()
     conn.execute("BEGIN IMMEDIATE;")
     try:
@@ -464,15 +613,10 @@ def permanent_purge_product(conn: sqlite3.Connection, product_id: str) -> list[s
         conn.execute("DELETE FROM product_photos WHERE product_id = ?;", (product_id,))
         conn.execute("DELETE FROM product_lens_profiles WHERE product_id = ?;", (product_id,))
         conn.execute("DELETE FROM products WHERE id = ?;", (product_id,))
-        conn.execute("COMMIT;")
-    except Exception:
-        conn.execute("ROLLBACK;")
-        raise
 
-    # 事务提交后按全局引用计数清理媒体（若仍有 Look 等引用则保留）
-    conn.execute("BEGIN IMMEDIATE;")
-    try:
         removed = _cleanup_unreferenced_assets(conn, candidate_assets)
+        if fail_before_commit_for_test:
+            raise RuntimeError("模拟彻底删除提交前异常")
         conn.execute("COMMIT;")
         return removed
     except Exception:
@@ -481,7 +625,7 @@ def permanent_purge_product(conn: sqlite3.Connection, product_id: str) -> list[s
 
 
 def permanent_purge_look(conn: sqlite3.Connection, look_id: str) -> list[str]:
-    """在单事务内彻底删除妆容记录，并按引用计数清理无用图片。"""
+    """在单一原子事务内彻底删除妆容记录，并按引用计数清理无用媒体及入队清理任务。"""
     candidate_assets: set[str] = set()
     conn.execute("BEGIN IMMEDIATE;")
     try:
@@ -498,13 +642,7 @@ def permanent_purge_look(conn: sqlite3.Connection, look_id: str) -> list[str]:
         conn.execute("DELETE FROM look_photos WHERE look_id = ?;", (look_id,))
         conn.execute("DELETE FROM look_product_items WHERE look_id = ?;", (look_id,))
         conn.execute("DELETE FROM looks WHERE id = ?;", (look_id,))
-        conn.execute("COMMIT;")
-    except Exception:
-        conn.execute("ROLLBACK;")
-        raise
 
-    conn.execute("BEGIN IMMEDIATE;")
-    try:
         removed = _cleanup_unreferenced_assets(conn, candidate_assets)
         conn.execute("COMMIT;")
         return removed
@@ -677,54 +815,110 @@ def migrate_legacy_category(
     }
 
 
-def migrate_legacy_idle_status(legacy_item: dict, *, has_usage_or_look_links: bool = False) -> dict:
+def migrate_legacy_idle_status(
+    legacy_item: dict,
+    *,
+    has_usage_or_look_links: bool = False,
+    today_iso: Optional[str] = None,
+) -> dict:
     """
-    依据 V3.1 校准后 idle 三分支兼容规则处理旧版闲置记录：
-    - 严禁无条件全部迁入 in_use
-    - 仅当具备明确开封或使用证据时迁至 in_use；无证据则迁至 unrecorded + 待人工确认
-    - 全量保留迁移审计信息
+    依据 V3.1 校准后 idle 三分支兼容规则处理旧版闲置记录（严格修补 PAO/剩余比例误判与冲突判定）：
+    - 严禁仅凭 pao_months 或孤立 remaining_percent 擅自推断为 in_use
+    - 存在任一自相矛盾证据时必须进入 unrecorded + pending_idle_review 保守态
+    - 仅当无矛盾且存在明确开封日期（opened_date）或真实使用轨迹（last_used_at / usage/look links）时才迁至 in_use
+    - 全量保留迁移审计信息与原始状态
     """
     raw_status = legacy_item.get("status")
-    if raw_status != "idle":
-        return {
-            "lifecycle_status": raw_status if raw_status in ("unrecorded", "unopened", "in_use", "finished") else "unrecorded",
-            "migration_legacy_status": raw_status,
-            "migration_review_status": None,
-            "audit_note": None,
-            "audit_json": None,
-        }
-
     opened = legacy_item.get("openedDate") or legacy_item.get("opened_date")
+    mfg = legacy_item.get("manufactureDate") or legacy_item.get("manufacture_date")
+    finished = legacy_item.get("finishedAt") or legacy_item.get("finished_at") or legacy_item.get("usedUpDate")
     pao = legacy_item.get("paoMonths") or legacy_item.get("pao_months")
     rem = legacy_item.get("remainingPercent") if "remainingPercent" in legacy_item else legacy_item.get("remaining_percent")
     last_used = legacy_item.get("lastUsedAt") or legacy_item.get("last_used_at")
 
-    has_used_evidence = bool(
-        opened
-        or pao
-        or (rem is not None and int(rem) < 100)
-        or last_used
-        or has_usage_or_look_links
-    )
+    if raw_status != "idle":
+        if raw_status in ("unrecorded", "unopened", "in_use", "finished"):
+            return {
+                "lifecycle_status": raw_status,
+                "remaining_percent": rem,
+                "opened_date": opened,
+                "finished_at": finished,
+                "migration_legacy_status": raw_status,
+                "migration_review_status": None,
+                "audit_note": None,
+                "audit_json": None,
+            }
+        # 未知非法枚举禁止静默吞掉
+        return {
+            "lifecycle_status": "unrecorded",
+            "remaining_percent": None,
+            "opened_date": None,
+            "finished_at": None,
+            "migration_legacy_status": str(raw_status),
+            "migration_review_status": "pending_idle_review",
+            "audit_note": f"[迁移日志] 未知旧状态：{raw_status}（转为未记录待人工核对）",
+            "audit_json": json.dumps(
+                {"legacy_status": raw_status, "branch": "branch_c_unknown_status_to_pending"},
+                ensure_ascii=False,
+            ),
+        }
 
-    if has_used_evidence:
-        target_status = "in_use"
-        review_status = None
-        branch = "branch_a_evidence_to_in_use"
-        note = "[迁移日志] 原状态：idle（依据开封/使用记录自动迁至使用中）"
-    else:
+    # 1. 检测证据矛盾（优先于一切推断）
+    conflicts: list[str] = []
+    if finished:
+        conflicts.append("idle_with_finished_at")
+    if rem is not None and int(rem) == 0:
+        conflicts.append("idle_with_zero_remaining")
+    if opened and mfg and opened < mfg:
+        conflicts.append("opened_before_manufacture")
+    if opened and today_iso and opened > today_iso[:10]:
+        conflicts.append("opened_in_future")
+    if opened and rem is None and not last_used and not has_usage_or_look_links:
+        # 例：有开封日期但剩余量未知不构成矛盾，但若同时标明 "unopened" 来源等才算冲突；保留作正常参考
+        pass
+    if not opened and not last_used and not has_usage_or_look_links and rem is not None and int(rem) < 100:
+        # 剩余比例 < 100 但没有任何开封日期/最近使用/历史关联，证据不足且信息不完整/存疑
+        conflicts.append("partial_remaining_without_usage_or_open_evidence")
+
+    # 2. 判定明确使用证据（不含单纯 PAO 或单纯剩余比例）
+    has_opened = bool(opened)
+    has_active_usage = bool(last_used or has_usage_or_look_links)
+
+    if conflicts:
         target_status = "unrecorded"
+        out_opened = None
+        out_finished = None
+        out_rem = None
         review_status = "pending_idle_review"
-        branch = "branch_b_ambiguous_to_unrecorded_pending"
-        note = "[迁移日志] 原状态：idle（缺开封及使用证据，迁至未记录待核对）"
+        branch = "branch_b_conflict_to_unrecorded_pending"
+        note = f"[迁移日志] 原状态：idle（证据存在冲突或不足[{','.join(conflicts)}]，转未记录待人工核对）"
+    elif has_opened or has_active_usage:
+        target_status = "in_use"
+        out_opened = opened
+        out_finished = None
+        out_rem = int(rem) if rem is not None else None
+        review_status = None
+        branch = "branch_a_opened_date_to_in_use" if has_opened else "branch_a_usage_evidence_to_in_use"
+        basis_txt = "明确开封日期" if has_opened else "实际使用/妆容关联记录（缺开封日期）"
+        note = f"[迁移日志] 原状态：idle（依据{basis_txt}迁至使用中）"
+    else:
+        # 仅有 PAO 或剩余比例 100% 或全空，不足以证明已经开封使用
+        target_status = "unrecorded"
+        out_opened = None
+        out_finished = None
+        out_rem = None
+        review_status = "pending_idle_review"
+        branch = "branch_b_insufficient_evidence_to_pending"
+        note = "[迁移日志] 原状态：idle（仅有 PAO/基础参数或无使用证据，迁至未记录待核对）"
 
     audit = json.dumps(
         {
             "legacy_status": "idle",
             "branch": branch,
+            "conflicts": conflicts,
             "had_opened_date": bool(opened),
             "had_pao": bool(pao),
-            "remaining_percent": rem,
+            "raw_remaining_percent": rem,
             "had_last_used_at": bool(last_used),
             "had_usage_or_look_links": bool(has_usage_or_look_links),
         },
@@ -732,8 +926,133 @@ def migrate_legacy_idle_status(legacy_item: dict, *, has_usage_or_look_links: bo
     )
     return {
         "lifecycle_status": target_status,
+        "remaining_percent": out_rem,
+        "opened_date": out_opened,
+        "finished_at": out_finished,
         "migration_legacy_status": "idle",
         "migration_review_status": review_status,
         "audit_note": note,
         "audit_json": audit,
     }
+
+
+def migrate_legacy_snapshot(
+    conn: sqlite3.Connection,
+    legacy_products: list[dict],
+    legacy_items: list[dict],
+    *,
+    usage_or_look_item_ids: Optional[set[str]] = None,
+    now_iso: Optional[str] = None,
+) -> dict[str, int]:
+    """
+    在单事务内幂等迁移旧版产品与单件快照到 SQLite Schema V1：
+    - 保留全部原始分类/状态审计信息
+    - 重复执行按主键幂等跳过，绝不重复建档或污染既有记录
+    - 任一记录违反约束时整批回滚，绝不跳过异常静默留脏数据
+    """
+    now = now_iso or _utc_now_iso()
+    linked_ids = usage_or_look_item_ids or set()
+    inserted_products = 0
+    inserted_items = 0
+
+    conn.execute("BEGIN IMMEDIATE;")
+    try:
+        for lp in legacy_products:
+            pid = lp["id"]
+            exists = conn.execute("SELECT 1 FROM products WHERE id = ?;", (pid,)).fetchone()
+            if exists is not None:
+                continue
+            mapped = migrate_legacy_category(
+                lp.get("subCategoryId"),
+                legacy_primary_id=lp.get("primaryCategoryId"),
+                name=lp.get("name", ""),
+                shade=lp.get("shade"),
+                texture=lp.get("texture"),
+            )
+            cat_row = conn.execute(
+                "SELECT id FROM categories WHERE code = ?;", (mapped["target_code"],)
+            ).fetchone()
+            if cat_row is None:
+                raise MigrationError(f"目标分类编码不存在: {mapped['target_code']}")
+            raw_cat_meta = json.dumps(
+                {
+                    "primaryCategoryId": lp.get("primaryCategoryId"),
+                    "subCategoryId": lp.get("subCategoryId"),
+                    "mapping_type": mapped["mapping_type"],
+                    "target_code": mapped["target_code"],
+                },
+                ensure_ascii=False,
+            )
+            conn.execute(
+                """
+                INSERT INTO products (
+                    id, brand_id, category_id, name, is_custom_name, shade,
+                    migration_legacy_category_raw, migration_review_status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    pid,
+                    lp.get("brandId"),
+                    cat_row["id"],
+                    lp["name"],
+                    1 if lp.get("isCustomName") else 0,
+                    lp.get("shade"),
+                    raw_cat_meta,
+                    mapped["review_status"],
+                    lp.get("createdAt") or now,
+                    lp.get("updatedAt") or now,
+                ),
+            )
+            inserted_products += 1
+
+        for li in legacy_items:
+            iid = li["id"]
+            exists = conn.execute("SELECT 1 FROM product_items WHERE id = ?;", (iid,)).fetchone()
+            if exists is not None:
+                continue
+            idle_res = migrate_legacy_idle_status(
+                li,
+                has_usage_or_look_links=(iid in linked_ids),
+                today_iso=now,
+            )
+            conn.execute(
+                """
+                INSERT INTO product_items (
+                    id, product_id, purchase_price_minor, currency_code, purchase_date,
+                    lifecycle_status, remaining_percent, lifecycle_note,
+                    manufacture_date, unopened_shelf_months, packaging_exp_date,
+                    opened_date, pao_months, finished_at, last_used_at,
+                    migration_legacy_status, migration_review_status, migration_audit_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    iid,
+                    li["productId"],
+                    li.get("purchasePriceMinor"),
+                    li.get("currencyCode") or "CNY",
+                    li.get("purchaseDate"),
+                    idle_res["lifecycle_status"],
+                    idle_res["remaining_percent"],
+                    idle_res["audit_note"],
+                    li.get("manufactureDate"),
+                    li.get("unopenedShelfMonths"),
+                    li.get("packagingExpDate"),
+                    idle_res["opened_date"],
+                    li.get("paoMonths"),
+                    idle_res["finished_at"],
+                    li.get("lastUsedAt"),
+                    idle_res["migration_legacy_status"],
+                    idle_res["migration_review_status"],
+                    idle_res["audit_json"],
+                    li.get("createdAt") or now,
+                    li.get("updatedAt") or now,
+                ),
+            )
+            inserted_items += 1
+
+        conn.execute("COMMIT;")
+        return {"inserted_products": inserted_products, "inserted_items": inserted_items}
+    except Exception:
+        conn.execute("ROLLBACK;")
+        raise

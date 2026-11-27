@@ -138,6 +138,48 @@ CREATE TABLE IF NOT EXISTS product_lens_profiles (
 
 CREATE INDEX IF NOT EXISTS idx_lens_profiles_cycle ON product_lens_profiles(replacement_cycle_code);
 
+-- 确保只有美瞳主类（specialty_group_code = 'lens'）的产品才能绑定 product_lens_profiles
+CREATE TRIGGER IF NOT EXISTS trg_lens_profile_require_lens_category_insert
+BEFORE INSERT ON product_lens_profiles
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, '非美瞳产品禁止关联 product_lens_profiles')
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM products p
+        JOIN categories c ON c.id = p.category_id
+        WHERE p.id = NEW.product_id
+          AND c.specialty_group_code = 'lens'
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_lens_profile_require_lens_category_update
+BEFORE UPDATE OF product_id ON product_lens_profiles
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, '非美瞳产品禁止关联 product_lens_profiles')
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM products p
+        JOIN categories c ON c.id = p.category_id
+        WHERE p.id = NEW.product_id
+          AND c.specialty_group_code = 'lens'
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_product_forbid_non_lens_with_profile
+BEFORE UPDATE OF category_id ON products
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, '存在美瞳专属资料时禁止变更至非美瞳分类')
+    WHERE EXISTS (
+        SELECT 1 FROM product_lens_profiles WHERE product_id = NEW.id
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM categories WHERE id = NEW.category_id AND specialty_group_code = 'lens'
+    );
+END;
+
 -- -----------------------------------------------------------------------------
 -- 7. product_photos（产品多图关联，is_cover = 1 为封面唯一真相源）
 -- -----------------------------------------------------------------------------
@@ -195,7 +237,15 @@ CREATE TABLE IF NOT EXISTS product_items (
     lens_eye_side TEXT NULL CHECK (lens_eye_side IS NULL OR lens_eye_side IN ('unspecified', 'left', 'right', 'both')),
     lens_power TEXT NULL CHECK (
         lens_power IS NULL OR
-        (length(trim(lens_power)) > 0 AND lens_power NOT LIKE '%/%' AND lens_power NOT LIKE '%,%')
+        (
+            length(trim(lens_power)) > 0
+            AND lens_power = trim(lens_power)
+            AND lens_power NOT LIKE '%/%'
+            AND lens_power NOT LIKE '%,%'
+            AND lens_power NOT LIKE '%;%'
+            AND lens_power NOT LIKE '%|%'
+            AND lens_power NOT LIKE '% %'
+        )
     ),
     batch_code TEXT NULL CHECK (batch_code IS NULL OR length(trim(batch_code)) > 0),
     migration_legacy_status TEXT NULL,

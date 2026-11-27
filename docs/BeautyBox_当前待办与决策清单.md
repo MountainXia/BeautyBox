@@ -1,8 +1,8 @@
 # 妆匣 BeautyBox 当前待办与决策清单（V3.1 正式冻结版）
 
-- **版本**：V3.1-Schema-Done（2026-11-27 同步）
+- **版本**：V3.1-Schema-Verified（2026-11-27 补强验收同步）
 - **决策口径来源**：[docs/adr/0002-m1-to-m10-product-decisions.md](file:///home/xianggujiang/projects/BeautyBox/docs/adr/0002-m1-to-m10-product-decisions.md)
-- **当前状态摘要**：**`UD-01`～`UD-04` 全部已由用户正式确认（待决策清零）**；**`V3-03` 目录隔离与 `V3-04` SQLite Schema V1（22 表 DDL + 147 分类种子 + Migration + 14/14 真实测试）已实施完毕**；尚未启动 Swift / SwiftUI / GRDB 原生编码。
+- **当前状态摘要**：**`UD-01`～`UD-04` 全部已由用户正式确认（待决策清零）**；**`V3-03` 目录隔离与 `V3-04` SQLite Schema V1（22 表 + 3 触发器 + 147 分类种子 + 校验和 Migration + 20/20 真实测试）已最终补强并通过验收**；尚未启动 Swift / SwiftUI / GRDB / 真实沙盒 `MediaStore` 编码。
 
 ---
 
@@ -39,9 +39,9 @@
 
 ## 三、当前进度与下一步可执行队列
 
-1. **`V3-03` 与 `V3-04`（已完成本机数据库层实施）**：已于独立目录 `database/` 落地 `0001_schema_v1.sql`（22 张表）、`0001_categories_v1.sql`（147 节点分类种子）、事务化 Migration 引擎 `beautybox_db.py` 与 14/14 通过的 `test_schema_v1.py`（原型 `prototype/` 保持只读冻结）。
+1. **`V3-03` 与 `V3-04`（已完成并最终补强通过）**：已于独立目录 `database/` 落地 `0001_schema_v1.sql`（22 张表 + 3 个完整性触发器）、`0001_categories_v1.sql`（147 节点分类种子）、事务校验和 Migration 与 20/20 通过的 `test_schema_v1.py`（原型 `prototype/` 保持只读冻结）。
 2. **`V3-05`（未开始 — 下一目标）**：Swift 核心领域规则引擎（M1～M10 纯逻辑模块与单测）。
-3. **`V3-06`（未开始 — 需 Mac/Xcode 实测）**：GRDB Repository 封装与 `MediaStore` 沙盒媒体文件 GC。
+3. **`V3-06`（未开始 — 需 Mac/Xcode 实测）**：GRDB Repository 封装与真实 iOS 沙盒 `MediaStore` 物理文件删除/失败重试/数据库磁盘一致性验证。
 4. **`V3-07`～`V3-20`（未开始）**：SwiftUI 五 Tab 原生页面、备份导出、白名单图片分享、StoreKit 2 订阅及 Mac/Xcode 真机发布。
 
 ---

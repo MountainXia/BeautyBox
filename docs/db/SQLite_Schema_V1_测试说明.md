@@ -3,7 +3,7 @@
 - **测试套件路径**：[database/tests/test_schema_v1.py](file:///home/xianggujiang/projects/BeautyBox/database/tests/test_schema_v1.py)
 - **被测核心实现**：[0001_schema_v1.sql](file:///home/xianggujiang/projects/BeautyBox/database/migrations/0001_schema_v1.sql)、[0001_categories_v1.sql](file:///home/xianggujiang/projects/BeautyBox/database/seeds/0001_categories_v1.sql)、[beautybox_db.py](file:///home/xianggujiang/projects/BeautyBox/database/python/beautybox_db.py)
 - **测试环境**：Linux x86_64 + Python `3.12.3` + SQLite `3.45.1`（每个用例均独立创建真实临时磁盘 `.sqlite` 数据库执行完整 SQL）
-- **最新运行结果**：**14/14 全部通过（0 failures, 0 errors, 0 skipped）** + 原生 `sqlite3` CLI `PRAGMA foreign_key_check` 零违规；原型回归 `node prototype/tests/run-tests.mjs` **9/9 通过**。
+- **最新运行结果**：**20/20 全部通过（0 failures, 0 errors, 0 skipped）** + 原生 `sqlite3` CLI `PRAGMA foreign_key_check` 零违规；原型回归 `node prototype/tests/run-tests.mjs` **9/9 通过**。
 
 ---
 
@@ -25,14 +25,20 @@
 | **TC-12** | `test_12_photo_multi_reference_protection_and_zero_ref_gc` | 共享照片同时被产品与妆容引用时，软删或彻删产品后严禁删图（引用=2）；直至妆容也彻删使引用归 0 时才释放删除 `media_assets` | 通过 |
 | **TC-13** | `test_13_migration_transaction_rollback_on_failure` | V2 迁移脚本执行到一半报错时整批 `ROLLBACK`，不残留半成品表、`user_version` 维持 1、V1 已有数据无损 | 通过 |
 | **TC-14** | `test_14_migration_version_governance_and_v2_upgrade` | 合法 Schema V2 增量脚本升级保留所有 V1 用户数据，递增 `user_version = 2` 并写 `schema_migrations`；拒绝高版本库降级 | 通过 |
+| **TC-15** | `test_15_contact_lens_triggers_optional_profile_and_power_check` | 触发器拦截非美瞳/护理液关联美瞳档案与跨类变更；美瞳缺省资料可正常保存；`RESTRICT` 与安全彻删验证；单盒 `lens_power` 拒绝空格/分号/竖线分隔多度数 | 通过 |
+| **TC-16** | `test_16_lifecycle_idle_evidence_cases_and_conflicts` | 5 种 `idle` 证据场景真库迁移：有开封日→`in_use`、无开封日但有 `lastUsedAt`/妆容关联→`in_use`、**仅 PAO 或仅剩余比例不得推算 `in_use`**、证据矛盾进待核对并记 `conflict`、无证据不静默推断 | 通过 |
+| **TC-17** | `test_17_category_migration_persistence_idempotency_and_rollback` | 五类分类迁移真实落库并保留 `migration_legacy_category_raw` 与待人工确认状态；重复迁移 100% 幂等；同批失败全事务回滚 | 通过 |
+| **TC-18** | `test_18_currency_float_missing_roundtrip_and_overflow_guard` | 拒接 Python `float`/`bool`/缺币种/超 15 位金额；精确小数往返；数据库 `NOT NULL` 与空币种拦截；`INT64` 汇总溢出报错拦截 | 通过 |
+| **TC-19** | `test_19_media_cleanup_queue_retry_and_tx_rollback` | 彻删提交前失败回滚保护媒体与清理队列；引用归零入队待清理任务；模拟磁盘删图失败保留 `retry_count` 与错误可成功重试（注：Python 模拟文件器仅测队列契约，**真实 iOS 沙盒删图归后续 `MediaStore` + Mac/Xcode 实测**） | 通过 |
+| **TC-20** | `test_20_migration_checksum_mismatch_detection` | 校验已执行 `schema_migrations` 的 SHA256 校验和，拦截历史脚本被篡改 | 通过 |
 
 ---
 
 ## 复现运行命令
 
 ```bash
-# 1. 运行 14 项真实 SQLite Schema V1 自动化测试
-python3 -m unittest discover -s database/tests -v
+# 1. 运行 20 项真实 SQLite Schema V1 自动化测试
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s database/tests -v
 
 # 2. 原生 sqlite3 CLI 全量冷启动与外键体检验证
 TMP_DB=$(mktemp /tmp/bb_cli_XXXXXX.sqlite)
@@ -44,4 +50,4 @@ rm -f "$TMP_DB"
 node prototype/tests/run-tests.mjs
 ```
 
-> **尚未验证的范围声明**：Swift `GRDB` 封装层与 iOS 真机真文件系统 IO / `isExcludedFromBackup` 特性在当前 Linux 环境无法执行，统一保持为「待 `V3-05`/`V3-06` 开发及 Mac/Xcode 真机实测」。
+> **尚未验证的范围声明**：Swift `GRDB` 封装层与真实 iOS 沙盒 `MediaStore` 物理文件删除/失败重试、事务与磁盘文件一致性及 `isExcludedFromBackup` 在当前 Linux 环境无法执行，统一列为「待 `V3-05`/`V3-06` 开发及 Mac/Xcode 真机实测」。

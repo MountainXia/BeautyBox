@@ -6,7 +6,7 @@
   - 正式 DDL：[0001_schema_v1.sql](file:///home/xianggujiang/projects/BeautyBox/database/migrations/0001_schema_v1.sql)
   - 预设种子：[0001_categories_v1.sql](file:///home/xianggujiang/projects/BeautyBox/database/seeds/0001_categories_v1.sql)
   - Migration 引擎与参考事务逻辑：[beautybox_db.py](file:///home/xianggujiang/projects/BeautyBox/database/python/beautybox_db.py)
-- **当前真实完成状态**：已在 Linux 环境通过 `sqlite3 3.45.1` + `python3 3.12.3` 完成建表 DDL、147 节点分类初始化与 14 项边界测试（14/14 通过）；**尚未启动 Swift/GRDB 原生封装，Swift 编译与真机 IO 行为均标记为“未实现 / 需 Mac/Xcode 实测”**。
+- **当前真实完成状态**：已在 Linux 环境通过 `sqlite3 3.45.1` + `python3 3.12.3` 完成建表 DDL、触发器约束、147 节点分类初始化、校验和迁移机制与 20 项边界测试（20/20 通过）；**尚未启动 Swift/GRDB 原生封装，Swift 编译、真实 iOS 沙盒 `MediaStore` 物理文件删除/失败重试以及真机 IO 行为均标记为“未实现 / 需 Mac/Xcode 实测”**。
 
 ---
 
@@ -64,13 +64,13 @@ erDiagram
 2. **禁止浮点与严格日期规范**：
    - 全库 22 张表 **0 个 `REAL` / `FLOAT` / `DOUBLE` 列**；金额统一 `INTEGER` 最小货币单位 + ISO 4217（16 种离线精度币种 `CHECK`）；
    - 业务纯日期（如 `manufacture_date` / `opened_date` / `packaging_exp_date` / `look_date` / `diary_date`）全部使用 `YYYY-MM-DD`，通过 SQLite 内置 `length(col) = 10 AND date(col) = col` 校验真实日历，并硬约束 `opened_date >= manufacture_date`、`finished_at >= opened_date`。
-3. **美瞳单盒与单源周期约束**：
+3. **美瞳单盒、单源周期与触发器护栏**：
    - 周期只存于 `product_lens_profiles.replacement_cycle_code`；
-   - `product_items` 严禁存在双度数并行列，仅存 `lens_eye_side`（`unspecified` / `left` / `right` / `both`）与单一 `lens_power`（`CHECK` 拦截含 `/` 或 `,` 的拼接双度数）及 `batch_code`。
-4. **7 天本地回收站与引用归零清理**：
+   - 数据库通过 `trg_lens_profile_require_lens_category_*` 与 `trg_product_forbid_non_lens_with_profile` 触发器强制拦截非美瞳（及护理液）关联美瞳专属资料；美瞳允许不填专属资料直接建档；
+   - `product_items` 严禁存在双度数并行列，仅存 `lens_eye_side`（`unspecified` / `left` / `right` / `both`）与单一 `lens_power`（`CHECK` 拦截含 `/`、`,`、`;`、`|`、空格的拼接双度数）及 `batch_code`。
+4. **7 天本地回收站、引用归零与可重试文件清理队列**：
    - 通过 `deleted_at`、`trash_expires_at`、`trash_scope`（`direct` / `cascade_with_product`）、`deleted_by_parent_id`、`delete_batch_id` 及共现 `CHECK` 约束隔离顶层误删与父级连带隐藏；
-   - 回收站 7 天缓冲期绝不删除磁盘图片；到期与主动彻删均走单事务安全拓扑（先清 `product_usage_logs` 再删实物，依靠 `ON DELETE SET NULL` 完整保留历史妆容产品快照）；事务提交后仅在全库 5 处引用总和（`product_photos`、`look_photos`、`wear_reviews`、`skin_diary_photos`、`looks.cover_asset_id`）全为 0 时才清出 `media_assets` 与物理文件。
+   - 回收站 7 天缓冲期绝不删除磁盘图片；彻底删除与 `media_assets` 引用归零清理在**同一原子事务**内完成（先清 `product_usage_logs` 再删实物，依靠 `ON DELETE SET NULL` 保留历史妆容产品快照；仅当 5 处引用总和归 0 时删 `media_assets` 并将待清理路径原子写入 `app_settings['pending_media_cleanup_queue']`）。若事务回滚，媒体资产与待清理队列均无损还原；真实 iOS 沙盒物理文件删除与重试由后续 `V3-06` `MediaStore` 模块承担验证。
 5. **Migration 机制与 V2 演进规范**：
-   - 空库通过 [beautybox_db.py](file:///home/xianggujiang/projects/BeautyBox/database/python/beautybox_db.py) 中 `apply_migrations` 在单次显式 `BEGIN IMMEDIATE ... COMMIT` 中跑完 `0001_schema_v1.sql` + `0001_categories_v1.sql` 并同步落盘 `schema_migrations` 与 `PRAGMA user_version = 1`；
-   - 严禁使用隐式自动提交接口执行多语句升级；任何 DDL/Seed/迁移 Hook 报错即整批 `ROLLBACK`；严禁降级；
+   - 空库通过 [beautybox_db.py](file:///home/xianggujiang/projects/BeautyBox/database/python/beautybox_db.py) 中 `apply_migrations` 在单次显式 `BEGIN IMMEDIATE ... COMMIT` 中跑完 `0001_schema_v1.sql` + `0001_categories_v1.sql` 并同步落盘 `schema_migrations`（含 SHA256 校验和）与 `PRAGMA user_version = 1`；支持校验历史版本迁移脚本防篡改、拒降级与失败整批回滚。
    - **未来 V2+ 扩展方式**：按版本号递增注册 `MigrationStep(version=2, ...)`（使用 `ALTER TABLE ... ADD COLUMN` 或新建附表及数据迁移脚本），绝对禁止重建数据库清空用户既有资产。

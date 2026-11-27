@@ -1,7 +1,7 @@
 # 妆匣 BeautyBox SQLite Schema V1 设计前置基线清单（V3.1 正式准入版）
 
-- **版本**：V3.1-Schema-Done（2026-11-27 更新；前置条件已转为实际落盘的 `SQLite Schema V1`）
-- **状态**：**`V3-04` SQLite Schema V1 已在 Linux (`sqlite3 3.45.1`) 真实实施并通过 14/14 自动化测试**（22 张真实业务/治理表；注：`GRDB` Swift 集成与 iOS 真机写入仍标注「未开始 / 需 Mac/Xcode 实测」）
+- **版本**：V3.1-Schema-Verified（2026-11-27 补强验收通过）
+- **状态**：**`V3-04` SQLite Schema V1 已在 Linux (`sqlite3 3.45.1`) 完成最终补强并通过 20/20 自动化测试**（22 张表 + 3 个美瞳完整性触发器；注：真实 iOS 沙盒 `MediaStore` 物理删图、`GRDB` Swift 集成及真机写入仍标注「未开始 / 需 Mac/Xcode 实测」）
 - **正式产出链接**：
   - 建表 DDL：[0001_schema_v1.sql](file:///home/xianggujiang/projects/BeautyBox/database/migrations/0001_schema_v1.sql)
   - 分类种子：[0001_categories_v1.sql](file:///home/xianggujiang/projects/BeautyBox/database/seeds/0001_categories_v1.sql)
@@ -89,4 +89,4 @@
 | 8 | 照片文件沙盒存储、单封面唯一索引与归零 GC 规则已明确 | **已满足** | `ADR-0001` 第 4.2 节 & `ADR-0002` M3 |
 | 9 | 货币存储整数最小单位与首页展示规则已明确 | **已满足** | `ADR-0002` M8 & `ADR-0001` 第五节（`UD-04` 已确认） |
 
-**实施验收结论：`SQLite Schema V1（V3-04）` 已正式完成 DDL（22 张表，含治理表 `schema_migrations`）、147 节点分类种子、事务化 Migration 与 14 项本机真实数据库测试；下一步按路线图推进 `V3-05`（Swift 领域引擎）与 `V3-06`（GRDB 持久层），其中原生编译与真机 IO 均需 Mac/Xcode 实测。**
+**实施验收结论：`SQLite Schema V1（V3-04）` 已正式完成 DDL（22 张表 + 3 个完整性触发器）、147 节点分类种子、事务校验和 Migration 与 20 项本机真实数据库测试（20/20 通过），现已作为稳定基线正式通过验收；下一步按路线图推进 `V3-05`（Swift 领域引擎）与 `V3-06`（GRDB 持久层 & 真实 iOS `MediaStore` 物理删图与重试验收），其中原生编译与真机 IO 均需 Mac/Xcode 实测。**

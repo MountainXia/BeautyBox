@@ -1,7 +1,7 @@
 # 妆匣 BeautyBox SQLite Schema V1 完整字段字典
 
-- **版本**：V1.0（直接自 [0001_schema_v1.sql](file:///home/xianggujiang/projects/BeautyBox/database/migrations/0001_schema_v1.sql) 在 SQLite `3.45.1` 实时 introspection 提取生成，确保与物理库零偏差）
-- **表数量**：**22 张**（无任何 `REAL`/`FLOAT`/`DOUBLE` 字段）
+- **版本**：V1.1（直接自补强后 [0001_schema_v1.sql](file:///home/xianggujiang/projects/BeautyBox/database/migrations/0001_schema_v1.sql) 在 SQLite `3.45.1` 实时 introspection 提取生成，与物理库 100% 一致）
+- **表与触发器规模**：**22 张表**（零 `REAL`/`FLOAT`/`DOUBLE` 列）、**3 个完整性触发器**
 
 ## 1. `schema_migrations`（5 列）
 | 列名 | 类型 | 非空 | 默认值 | 主键 / 外键引用 |
@@ -388,3 +388,10 @@
 | `total_bytes` | `INTEGER` | NOT NULL | — | — |
 | `destination_kind` | `TEXT` | NOT NULL | — | — |
 | `status` | `TEXT` | NOT NULL | — | — |
+
+## 23. 完整性触发器清单
+| 触发器名 | 绑定表 | 作用 |
+| --- | --- | --- |
+| `trg_lens_profile_require_lens_category_insert` | `product_lens_profiles` | 禁止非美瞳（及护理液）产品插入 `product_lens_profiles` |
+| `trg_lens_profile_require_lens_category_update` | `product_lens_profiles` | 禁止将 `product_lens_profiles` 关联改绑至非美瞳产品 |
+| `trg_product_forbid_non_lens_with_profile` | `products` | 禁止在存在美瞳档案时将 `products.category_id` 改为非美瞳分类 |
