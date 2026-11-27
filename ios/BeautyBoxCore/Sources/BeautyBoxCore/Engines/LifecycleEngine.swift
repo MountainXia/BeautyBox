@@ -140,6 +140,10 @@ public enum LifecycleEngine {
             guard request.userConfirmed else {
                 throw DomainError.confirmationRequired(from: from, to: to)
             }
+            let resolvedOpened = request.openedDateInput ?? item.openedDate
+            if let opened = resolvedOpened, let mfg = item.manufactureDate, opened < mfg {
+                throw DomainError.openedDateBeforeManufactureDate(opened: opened, manufacture: mfg)
+            }
             let candidateRemaining = request.remainingPercentInput ?? 50
             guard (1...100).contains(candidateRemaining) else {
                 throw DomainError.invalidRemainingPercent(candidateRemaining)
@@ -148,7 +152,7 @@ public enum LifecycleEngine {
                 previousStatus: from,
                 nextStatus: .inUse,
                 requiresConfirmation: true,
-                openedDate: request.openedDateInput ?? item.openedDate,
+                openedDate: resolvedOpened,
                 finishedAt: nil,
                 remainingPercent: candidateRemaining,
                 lifecycleNote: item.lifecycleNote,

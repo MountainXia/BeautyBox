@@ -115,6 +115,24 @@ public struct Product: Identifiable, Equatable, Hashable, Codable, Sendable {
         self.spec = spec
         self.lensProfile = lensProfile
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, isCustomName, brandName, category, shade, spec, lensProfile
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            id: try container.decode(String.self, forKey: .id),
+            name: try container.decode(String.self, forKey: .name),
+            isCustomName: try container.decode(Bool.self, forKey: .isCustomName),
+            brandName: try container.decodeIfPresent(String.self, forKey: .brandName),
+            category: try container.decode(CategoryMeta.self, forKey: .category),
+            shade: try container.decodeIfPresent(String.self, forKey: .shade),
+            spec: try container.decodeIfPresent(ProductSpec.self, forKey: .spec),
+            lensProfile: try container.decodeIfPresent(ProductLensProfile.self, forKey: .lensProfile)
+        )
+    }
 }
 
 /// 单件/单盒实物领域模型（ProductItem），严禁包含旧版双度数或 `idle` 状态。
@@ -205,6 +223,39 @@ public struct ProductItem: Identifiable, Equatable, Hashable, Codable, Sendable 
         self.lensEyeSide = lensEyeSide
         self.lensPower = normalizedPower
         self.batchCode = batchCode?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, productId, purchasePrice, purchaseDate, lifecycleStatus, remainingPercent
+        case lifecycleNote, lastUsedAt, finishedAt, manufactureDate, unopenedShelfMonths
+        case packagingExpDate, openedDate, paoMonths, confirmedExpiryDate
+        case expiryConfirmedAt, confirmedInputFingerprint, lensEyeSide, lensPower, batchCode
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            id: try container.decode(String.self, forKey: .id),
+            productId: try container.decode(String.self, forKey: .productId),
+            purchasePrice: try container.decodeIfPresent(MoneyAmount.self, forKey: .purchasePrice),
+            purchaseDate: try container.decodeIfPresent(PureDate.self, forKey: .purchaseDate),
+            lifecycleStatus: try container.decode(LifecycleStatus.self, forKey: .lifecycleStatus),
+            remainingPercent: try container.decodeIfPresent(Int.self, forKey: .remainingPercent),
+            lifecycleNote: try container.decodeIfPresent(String.self, forKey: .lifecycleNote),
+            lastUsedAt: try container.decodeIfPresent(PureDate.self, forKey: .lastUsedAt),
+            finishedAt: try container.decodeIfPresent(PureDate.self, forKey: .finishedAt),
+            manufactureDate: try container.decodeIfPresent(PureDate.self, forKey: .manufactureDate),
+            unopenedShelfMonths: try container.decodeIfPresent(Int.self, forKey: .unopenedShelfMonths),
+            packagingExpDate: try container.decodeIfPresent(PureDate.self, forKey: .packagingExpDate),
+            openedDate: try container.decodeIfPresent(PureDate.self, forKey: .openedDate),
+            paoMonths: try container.decodeIfPresent(Int.self, forKey: .paoMonths),
+            confirmedExpiryDate: try container.decodeIfPresent(PureDate.self, forKey: .confirmedExpiryDate),
+            expiryConfirmedAt: try container.decodeIfPresent(String.self, forKey: .expiryConfirmedAt),
+            confirmedInputFingerprint: try container.decodeIfPresent(String.self, forKey: .confirmedInputFingerprint),
+            lensEyeSide: try container.decodeIfPresent(LensEyeSide.self, forKey: .lensEyeSide),
+            lensPower: try container.decodeIfPresent(String.self, forKey: .lensPower),
+            batchCode: try container.decodeIfPresent(String.self, forKey: .batchCode)
+        )
     }
 }
 

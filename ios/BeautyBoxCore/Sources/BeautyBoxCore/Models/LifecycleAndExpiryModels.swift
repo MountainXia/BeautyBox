@@ -227,6 +227,8 @@ public struct ExpiryEvaluationResult: Equatable, Hashable, Sendable {
     public let effectiveSource: EffectiveExpirySource
     public let status: ExpiryStatus
     public let daysUntilExpiry: Int?
+    /// `finished` 态仅保留静态有效期供查看，主动临期/过期告警应予抑制（ADR-0002 M2 / M9）。
+    public let isActiveAlertSuppressed: Bool
 
     // 非猜测型安全提示（如缺开封/PAO 兜底、多片日抛盒单副提醒）
     public let fallbackNotice: String?

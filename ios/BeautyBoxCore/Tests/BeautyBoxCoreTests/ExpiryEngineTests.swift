@@ -5,21 +5,24 @@ import Testing
 struct ExpiryEngineTests {
     private let d = { (iso: String) -> PureDate in try! PureDate(isoString: iso) }
 
-    @Test("PureDate 闰年与月末收口运算完全准确且不依赖时区")
+    @Test("PureDate 闰年、月末收口与年份越界安全防护")
     func pureDateCalendarMath() throws {
         // 2024 闰年
-        #expect(d("2024-01-31").addingMonths(1) == d("2024-02-29"))
+        #expect(try d("2024-01-31").addingMonths(1) == d("2024-02-29"))
         // 2025 平年
-        #expect(d("2025-01-31").addingMonths(1) == d("2025-02-28"))
+        #expect(try d("2025-01-31").addingMonths(1) == d("2025-02-28"))
         // 跨年加月与减月
-        #expect(d("2025-11-30").addingMonths(3) == d("2026-02-28"))
-        #expect(d("2026-03-31").addingMonths(-1) == d("2026-02-28"))
-        // 非法闰日应拦截
+        #expect(try d("2025-11-30").addingMonths(3) == d("2026-02-28"))
+        #expect(try d("2026-03-31").addingMonths(-1) == d("2026-02-28"))
+        // 非法闰日与超界年月均应抛出 DomainError 而非运行时崩溃
         #expect(throws: DomainError.invalidCalendarDate(year: 2025, month: 2, day: 29)) {
             _ = try PureDate(year: 2025, month: 2, day: 29)
         }
+        #expect(throws: DomainError.invalidCalendarDate(year: 10000, month: 1, day: 1)) {
+            _ = try d("9999-12-01").addingMonths(1)
+        }
         // 自然日加减与间隔
-        #expect(d("2026-02-27").addingDays(3) == d("2026-03-02"))
+        #expect(try d("2026-02-27").addingDays(3) == d("2026-03-02"))
         #expect(d("2026-11-01").days(until: d("2026-12-01")) == 30)
     }
 
@@ -172,5 +175,35 @@ struct ExpiryEngineTests {
         #expect(fallbackRes.computedBasis == .mfgPlusShelf)
         #expect(fallbackRes.fallbackNotice != nil)
         #expect(fallbackRes.status == .normal)
+
+        // 全周期（双周抛/季抛/半年抛/年抛/other+PAO）、临期阈值精确边界及已用完静态抑制
+        let biweekly = try ExpiryEngine.evaluate(
+            inputs: ExpiryRawInputs(lifecycleStatus: .inUse, isLens: true, replacementCycle: .biweekly, openedDate: d("2026-11-01")),
+            today: today
+        )
+        #expect(biweekly.computedExpiryDate == d("2026-11-15"))
+        #expect(biweekly.computedBasis == .lensOpenCycle)
+
+        let annual = try ExpiryEngine.evaluate(
+            inputs: ExpiryRawInputs(lifecycleStatus: .finished, isLens: true, replacementCycle: .annual, openedDate: d("2025-11-27")),
+            today: today
+        )
+        #expect(annual.computedExpiryDate == d("2026-11-27"))
+        #expect(annual.isActiveAlertSuppressed == true)
+
+        let thresholdExact = try ExpiryEngine.evaluate(
+            inputs: ExpiryRawInputs(lifecycleStatus: .unopened, packagingExpDate: d("2026-12-27")),
+            today: today,
+            expiringThresholdDays: 30
+        )
+        #expect(thresholdExact.status == .expiringSoon)
+        #expect(thresholdExact.daysUntilExpiry == 30)
+
+        let thresholdOutside = try ExpiryEngine.evaluate(
+            inputs: ExpiryRawInputs(lifecycleStatus: .unopened, packagingExpDate: d("2026-12-28")),
+            today: today,
+            expiringThresholdDays: 30
+        )
+        #expect(thresholdOutside.status == .normal)
     }
 }

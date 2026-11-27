@@ -33,11 +33,11 @@ public enum ExpiryEngine {
         }
 
         // 未开封上限来源识别（packaging_exp_date 优先于 mfg + shelf_months）
-        let mfgPlusShelfDate: PureDate? = {
+        let mfgPlusShelfDate: PureDate? = try {
             guard let mfg = inputs.manufactureDate, let shelf = inputs.unopenedShelfMonths else {
                 return nil
             }
-            return mfg.addingMonths(shelf)
+            return try mfg.addingMonths(shelf)
         }()
 
         let unopenedLimit: PureDate?
@@ -54,19 +54,19 @@ public enum ExpiryEngine {
         }
 
         // 开封后上限推算（按通用 PAO 与美瞳更换周期区分）
-        let openedLimit: PureDate? = {
+        let openedLimit: PureDate? = try {
             guard let opened = inputs.openedDate else { return nil }
             if inputs.isLens {
                 if let cycleDays = inputs.replacementCycle?.cycleDays {
-                    return opened.addingDays(cycleDays)
+                    return try opened.addingDays(cycleDays)
                 }
                 if let pao = inputs.paoMonths {
-                    return opened.addingMonths(pao)
+                    return try opened.addingMonths(pao)
                 }
                 return nil
             } else {
                 guard let pao = inputs.paoMonths else { return nil }
-                return opened.addingMonths(pao)
+                return try opened.addingMonths(pao)
             }
         }()
 
@@ -192,6 +192,7 @@ public enum ExpiryEngine {
             effectiveSource: effectiveSource,
             status: status,
             daysUntilExpiry: daysLeft,
+            isActiveAlertSuppressed: inputs.lifecycleStatus == .finished,
             fallbackNotice: fallbackNotice,
             lensMultiPieceDailyNotice: multiPieceDailyNotice
         )

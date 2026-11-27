@@ -62,6 +62,7 @@ let expiryResult = try ExpiryEngine.evaluate(
    - `LifecycleEngine.assessLegacyIdle` 的冲突检测键名、PAO/剩余比例不擅自推断 `in_use` 的保守边界与 `migrate_legacy_idle_status` 一致。
 2. **供 `V3-06`（GRDB Repository & MediaStore）集成边界**：
    - GRDB Record 层负责 SQLite 行与 `Product` / `ProductItem` 的字段映射、外键触发器联动、7 天回收站事务与 `MediaStore` 沙盒文件清理；所有业务不变量（金额精度、状态切换清除表、`min()` 到期推算、美瞳单盒约束、名称建议）均应直接委托 `BeautyBoxCore` 计算，不在 Repository 或 SwiftUI View 内重复手写。
-3. **当前验证范围与 Mac/Xcode 待实测项**：
-   - **已在本机 Linux 完成**：`Swift 6.4.3 (x86_64-unknown-linux-gnu)` 编译、Swift Testing 纯逻辑单测、SQLite 真实库 20 项及冻结原型 9 项回归。
+3. **最终审查补强与验证记录（2026-11-27 验收收口）**：
+   - **已收口边界**：补齐 `PureDate.addingMonths` / `addingDays` 年份越界异常保护（消除 `try!` 隐患）、`MoneyAmount` / `Product` / `ProductItem` 自定义 `Codable` 解码不变式拦截、`finished -> in_use` 重新启用时的 `openedDate >= manufactureDate` 校验，以及 `ExpiryEvaluationResult.isActiveAlertSuppressed`（已用完静默主动告警标）。
+   - **已在本机 Linux 完成**：`Swift 6.4.3 (x86_64-unknown-linux-gnu)` 零警告编译、Swift Testing 4 套 15 项单元测试通过、SQLite 真实库 20 项及冻结原型 9 项回归通过。
    - **需 Mac/Xcode 实测**：iOS/ARM64 真机与模拟器编译、Xcode Package 工程集成、GRDB SQLite 运行时挂载、SwiftUI 绑定与沙盒文件 IO。

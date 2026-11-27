@@ -173,5 +173,11 @@ struct ProductNameAndLensTests {
         #expect(pairing.leftBoxes.map(\.id) == ["box_l"])
         #expect(pairing.rightBoxes.map(\.id) == ["box_r"])
         #expect(pairing.hasDistinctLeftRightPair == true)
+
+        // 破坏性 Codable JSON 解码应同样受 Product/ProductItem 领域不变式拦截
+        let badItemJSON = #"{"id":"i1","productId":"p1","lifecycleStatus":"finished","remainingPercent":50}"#.data(using: .utf8)!
+        #expect(throws: DomainError.finishedRequiresZeroRemaining(actual: 50)) {
+            _ = try JSONDecoder().decode(ProductItem.self, from: badItemJSON)
+        }
     }
 }

@@ -105,4 +105,33 @@ struct MoneyCalculatorTests {
         #expect(summary.otherCurrencyTotals[1].totalAmount.minorUnits == 3250)
         #expect(summary.otherCurrencyTotals[2].totalAmount.minorUnits == 4500)
     }
+
+    @Test("边界防护：加法/聚合安全上限溢出与 Codable 反序列化不变式拦截")
+    func moneyOverflowAndDecodableInvariants() throws {
+        let maxCny = try MoneyAmount(minorUnits: MoneyAmount.maxMinorValue, currency: .cny)
+        let oneCent = try MoneyAmount(minorUnits: 1, currency: .cny)
+
+        #expect(throws: DomainError.moneyOverflow(maxMinorDigits: 15)) {
+            _ = try MoneyCalculator.addSameCurrency(maxCny, oneCent)
+        }
+        #expect(throws: DomainError.moneyOverflow(maxMinorDigits: 15)) {
+            _ = try MoneyCalculator.aggregateByCurrency([maxCny, oneCent], primaryCurrency: .cny)
+        }
+
+        // 无外币且主币种为空时归零但不报外币
+        let emptySummary = try MoneyCalculator.aggregateByCurrency([], primaryCurrency: .cny)
+        #expect(emptySummary.primaryTotal.minorUnits == 0)
+        #expect(emptySummary.primaryItemCount == 0)
+        #expect(emptySummary.hasForeignCurrencies == false)
+
+        // JSON 解码负最小单位或超限金额必须受 Codable 校验拦截
+        let negativeJSON = #"{"minorUnits": -50, "currency": "CNY"}"#.data(using: .utf8)!
+        #expect(throws: DomainError.negativeMinorUnits(-50)) {
+            _ = try JSONDecoder().decode(MoneyAmount.self, from: negativeJSON)
+        }
+        let overflowJSON = #"{"minorUnits": 1000000000000000, "currency": "CNY"}"#.data(using: .utf8)!
+        #expect(throws: DomainError.moneyOverflow(maxMinorDigits: 15)) {
+            _ = try JSONDecoder().decode(MoneyAmount.self, from: overflowJSON)
+        }
+    }
 }

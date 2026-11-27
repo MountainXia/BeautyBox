@@ -108,6 +108,18 @@ public struct MoneyAmount: Hashable, Codable, Sendable {
         self.currency = currency
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case minorUnits
+        case currency
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let minorUnits = try container.decode(Int64.self, forKey: .minorUnits)
+        let currency = try container.decode(CurrencyCode.self, forKey: .currency)
+        try self.init(minorUnits: minorUnits, currency: currency)
+    }
+
     /// 精确十进制字符串表达（例如 `CNY 199.90` -> `"199.90"`，`JPY 3200` -> `"3200"`，`KWD 12.345` -> `"12.345"`）。
     public var decimalString: String {
         MoneyCalculator.format(self)

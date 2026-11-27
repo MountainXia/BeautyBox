@@ -194,6 +194,29 @@ struct LifecycleEngineTests {
         #expect(reopenOutcome.finishedAt == nil)
         #expect(reopenOutcome.remainingPercent == 30)
         #expect(reopenOutcome.clearedFields == ["finished_at"])
+
+        // 8. finished -> in_use 时改填早于生产日期的开封日亦应拦截，finished -> unopened 高风险退回双清
+        #expect(throws: DomainError.openedDateBeforeManufactureDate(opened: d("2025-05-01"), manufacture: mfg)) {
+            _ = try LifecycleEngine.transition(
+                item: finishedItem,
+                request: LifecycleTransitionRequest(
+                    targetStatus: .inUse,
+                    userConfirmed: true,
+                    openedDateInput: d("2025-05-01"),
+                    remainingPercentInput: 30,
+                    today: today
+                )
+            )
+        }
+        let finishedToUnopened = try LifecycleEngine.transition(
+            item: finishedItem,
+            request: LifecycleTransitionRequest(targetStatus: .unopened, userConfirmed: true, today: today)
+        )
+        #expect(finishedToUnopened.nextStatus == .unopened)
+        #expect(finishedToUnopened.openedDate == nil)
+        #expect(finishedToUnopened.finishedAt == nil)
+        #expect(finishedToUnopened.remainingPercent == 100)
+        #expect(finishedToUnopened.clearedFields == ["opened_date", "finished_at"])
     }
 
     @Test("历史废弃 idle 严格证据分流：拒绝孤立 PAO/剩余比例臆断，矛盾证据进待核对")
@@ -228,7 +251,7 @@ struct LifecycleEngineTests {
         #expect(onlyFullRem.targetStatus == .unrecorded)
         #expect(onlyFullRem.reviewStatus == .pendingIdleReview)
 
-        // 分支 B3：存在矛盾证据（例如同时有 finishedAt，或 openedDate < manufactureDate，或孤立残量 < 100）
+        // 分支 B3：存在矛盾证据（例如同时有 finishedAt，未来开封日，或孤立残量 < 100）
         let conflictZero = LifecycleEngine.assessLegacyIdle(
             LegacyIdleEvidence(legacyStatus: "idle", remainingPercent: 0, finishedAt: d("2026-09-01"), today: today)
         )
@@ -236,6 +259,13 @@ struct LifecycleEngineTests {
         #expect(conflictZero.reviewStatus == .pendingIdleReview)
         #expect(conflictZero.conflicts.contains("idle_with_finished_at"))
         #expect(conflictZero.conflicts.contains("idle_with_zero_remaining"))
+
+        let futureOpened = LifecycleEngine.assessLegacyIdle(
+            LegacyIdleEvidence(legacyStatus: "idle", openedDate: d("2026-12-01"), today: today)
+        )
+        #expect(futureOpened.targetStatus == .unrecorded)
+        #expect(futureOpened.reviewStatus == .pendingIdleReview)
+        #expect(futureOpened.conflicts == ["opened_in_future"])
 
         let conflictPartial = LifecycleEngine.assessLegacyIdle(
             LegacyIdleEvidence(legacyStatus: "idle", remainingPercent: 60, today: today)

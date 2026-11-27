@@ -102,22 +102,32 @@ public struct PureDate: Comparable, Hashable, Codable, Sendable, CustomStringCon
     }
 
     /// 按自然月递增/递减；当目标月份天数少于原日期（如 `01-31 + 1个月`）时，自动收口至目标月最后一天。
-    public func addingMonths(_ months: Int) -> PureDate {
+    public func addingMonths(_ months: Int) throws -> PureDate {
         let zeroBasedMonth = month - 1
-        let totalMonths = year * 12 + zeroBasedMonth + months
+        let baseMonths = year * 12 + zeroBasedMonth
+        let summed = baseMonths.addingReportingOverflow(months)
+        guard !summed.overflow else {
+            throw DomainError.invalidCalendarDate(year: year, month: month, day: day)
+        }
+        let totalMonths = summed.partialValue
         let targetYear = totalMonths >= 0 ? (totalMonths / 12) : ((totalMonths - 11) / 12)
         let targetMonth = totalMonths - targetYear * 12 + 1
         let maxDay = Self.daysInMonth(year: targetYear, month: targetMonth)
         let clampedDay = min(day, maxDay)
-        return try! PureDate(year: targetYear, month: targetMonth, day: clampedDay)
+        return try PureDate(year: targetYear, month: targetMonth, day: clampedDay)
     }
 
     /// 按自然日递增/递减（基于 UTC 公历 `Calendar.date(byAdding: .day, ...)`）。
-    public func addingDays(_ days: Int) -> PureDate {
+    public func addingDays(_ days: Int) throws -> PureDate {
         let baseDate = toUTCDate()
-        let shifted = Self.utcGregorian.date(byAdding: .day, value: days, to: baseDate)!
+        guard let shifted = Self.utcGregorian.date(byAdding: .day, value: days, to: baseDate) else {
+            throw DomainError.invalidCalendarDate(year: year, month: month, day: day)
+        }
         let comps = Self.utcGregorian.dateComponents([.year, .month, .day], from: shifted)
-        return try! PureDate(year: comps.year!, month: comps.month!, day: comps.day!)
+        guard let targetYear = comps.year, let targetMonth = comps.month, let targetDay = comps.day else {
+            throw DomainError.invalidCalendarDate(year: year, month: month, day: day)
+        }
+        return try PureDate(year: targetYear, month: targetMonth, day: targetDay)
     }
 
     /// 计算 `self` 到目标日期 `other` 的自然日差（`other - self`）。
