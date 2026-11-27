@@ -1,8 +1,8 @@
 # 妆匣 BeautyBox 当前待办与决策清单（V3.1 正式冻结版）
 
-- **版本**：V3.1-DomainCore-Verified（2026-11-27 `V3-05` 同步）
+- **版本**：V3.1-Persistence-V306A-Verified（2026-11-27 `V3-06A` 同步）
 - **决策口径来源**：[docs/adr/0002-m1-to-m10-product-decisions.md](file:///home/xianggujiang/projects/BeautyBox/docs/adr/0002-m1-to-m10-product-decisions.md)
-- **当前状态摘要**：**`UD-01`～`UD-04` 全部已由用户正式确认（待决策清零）**；**`V3-03` 目录隔离、`V3-04` SQLite Schema V1（20/20 真实测试）及 `V3-05` 纯 Swift `BeautyBoxCore` 核心领域引擎（Linux Swift 6.4.3 编译与单元测试）均已通过本机验收**；尚未启动 SwiftUI / GRDB / 真实沙盒 `MediaStore` 编码，iOS 工程集成仍**需 Mac/Xcode 实测**。
+- **当前状态摘要**：**`UD-01`～`UD-04` 全部已由用户正式确认（待决策清零）**；**`V3-03` 目录隔离、`V3-04` SQLite Schema V1（20/20）、`V3-05` `BeautyBoxCore`（15/15）与 `V3-06A` `BeautyBoxPersistence` GRDB 基础持久层（8/8）均已通过本机验收**；尚未启动 `V3-06B`（`MediaStore`/回收站/妆容快照）与 SwiftUI 编码，iOS 工程集成仍**需 Mac/Xcode 实测**。
 
 ---
 
@@ -41,7 +41,8 @@
 
 1. **`V3-03` 与 `V3-04`（已完成并最终补强通过）**：已于独立目录 `database/` 落地 `0001_schema_v1.sql`（22 张表 + 3 个完整性触发器）、`0001_categories_v1.sql`（147 节点分类种子）、事务校验和 Migration 与 20/20 通过的 `test_schema_v1.py`（原型 `prototype/` 保持只读冻结）。
 2. **`V3-05`（已完成本机 Linux Swift 6.4.3 编译与单测；iOS 真机/模拟器集成需 Mac 实测）**：已落地 [ios/BeautyBoxCore](file:///home/xianggujiang/projects/BeautyBox/ios/BeautyBoxCore/Package.swift) 与 [BeautyBoxCore_V3-05_领域核心说明.md](file:///home/xianggujiang/projects/BeautyBox/docs/swift/BeautyBoxCore_V3-05_领域核心说明.md)。
-3. **`V3-06`（未开始 — 下一目标，需 Mac/Xcode 实测）**：GRDB Repository 封装与真实 iOS 沙盒 `MediaStore` 物理文件删除/失败重试/数据库磁盘一致性验证。
+3. **`V3-06A`（已完成本机 Linux GRDB 7.12.0 编译与真实 SQLite 8/8 测试；iOS 集成需 Mac 实测）**：已落地 [ios/BeautyBoxPersistence](file:///home/xianggujiang/projects/BeautyBox/ios/BeautyBoxPersistence/Package.swift) 与 [BeautyBoxPersistence_V3-06A_持久化层说明.md](file:///home/xianggujiang/projects/BeautyBox/docs/swift/BeautyBoxPersistence_V3-06A_持久化层说明.md)。
+4. **`V3-06B`（未开始 — 下一目标，真实沙盒删图需 Mac/Xcode 实测）**：7 天回收站跨表事务、妆容快照与日常 Repository、`MediaStore` 物理文件删除/失败重试/孤儿对账。
 4. **`V3-07`～`V3-20`（未开始）**：SwiftUI 五 Tab 原生页面、备份导出、白名单图片分享、StoreKit 2 订阅及 Mac/Xcode 真机发布。
 
 ---
