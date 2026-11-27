@@ -1,11 +1,11 @@
 # 妆匣 BeautyBox 新版开发路线图（V3.1 产品基线正式冻结版）
 
-- **文档版本**：V3.1-Frozen（2026-11-27 最终校准冻结；沿用 [BeautyBox_新版开发路线图_V3.0.md](file:///home/xianggujiang/projects/BeautyBox/docs/BeautyBox_新版开发路线图_V3.0.md) 路径更新，历史原型计划归档于 [docs/04_开发计划与AI指令_V2.0.docx](file:///home/xianggujiang/projects/BeautyBox/docs/04_开发计划与AI指令_V2.0.docx)）
-- **当前里程碑状态**：**Phase 1.5（V3.1 产品规则基线与三级分类体系）已正式冻结！`UD-01`～`UD-04` 全部已由用户确认，9 项前置检查门全部满足，`SQLite Schema V1（V3-04）` 已具备启动条件。**
+- **文档版本**：V3.1-Schema-Done（2026-11-27 同步；沿用 [BeautyBox_新版开发路线图_V3.0.md](file:///home/xianggujiang/projects/BeautyBox/docs/BeautyBox_新版开发路线图_V3.0.md) 路径更新，历史原型计划归档于 [docs/04_开发计划与AI指令_V2.0.docx](file:///home/xianggujiang/projects/BeautyBox/docs/04_开发计划与AI指令_V2.0.docx)）
+- **当前里程碑状态**：**Phase 1.5（V3.1 规则基线冻结）及 Phase 2 前半段（`V3-03` 目录隔离与 `V3-04` SQLite Schema V1 正式实施及本机 14/14 自动化测试）已完成！下一目标为 `V3-05` Swift 领域规则引擎。**
 - **重要执行边界声明**：
-  1. 原型完成 ≠ 原生 iOS App 完成；目前**尚未启动 SQLite 正式建表 DDL、Migration 脚本及任何 Swift/SwiftUI 代码开发**。
+  1. 原型完成 & SQLite 本机通过 ≠ 原生 iOS App 完成；目前**尚未启动任何 Swift / SwiftUI / GRDB 原生代码开发**，GRDB 与真机存储仍**需 Mac/Xcode 实测**。
   2. `prototype/` 目录自 `f6752ac`（标签 `v0.2-task02.1-frozen`）起永久冻结只读。
-  3. 本轮完成后停止 M1～M10 规则反复修改，等待用户下达启动下一阶段开发指令。
+  3. 当前工作流等待用户审阅 SQLite Schema V1 实施结果并指令开启 `V3-05`。
 
 ---
 
@@ -15,7 +15,7 @@
 | --- | --- | --- | --- |
 | **Phase 0 & 1** | 架构锁定 & 浏览器可点击原型收尾（TASK01 / TASK02 / TASK02.1） | **已完成并正式冻结** | 提交 `f6752ac`、标签 `v0.2-task02.1-frozen`、[验收清单](file:///home/xianggujiang/projects/BeautyBox/docs/testing/TASK02.1-原型收尾与冻结验收清单.md) |
 | **Phase 1.5（本轮完成）** | M1～M10 规则冻结、三级分类与迁移字典校准、美瞳单盒模型、7 天回收站完整机制与 `idle` 分流 | **已完成并正式冻结（待用户决策清零）** | [ADR-0002 V3.1-Frozen](file:///home/xianggujiang/projects/BeautyBox/docs/adr/0002-m1-to-m10-product-decisions.md)、[PRD V3.1](file:///home/xianggujiang/projects/BeautyBox/docs/BeautyBox_产品需求规格说明书_V3.0.md)、[SQLite 前置清单](file:///home/xianggujiang/projects/BeautyBox/docs/BeautyBox_SQLite数据库设计前置清单.md)、[待办与决策清单](file:///home/xianggujiang/projects/BeautyBox/docs/BeautyBox_当前待办与决策清单.md) |
-| **Phase 2（可启动）** | `V3-03` 隔离整理 → `V3-04` SQLite Schema V1 → `V3-05` Swift 领域规则引擎 → `V3-06` GRDB Repository & 媒体安全存储 | **准入条件全部满足，待指令启动** | 本机可用 `sqlite3 + python3` 验证全 DDL 与边界测试；Swift/Xcode 编译标「需 Mac 实测」 |
+| **Phase 2（进行中：`V3-03`/`V3-04` 完成）** | `V3-03` 目录隔离 & `V3-04` SQLite Schema V1（**已完成本机 DDL/Seeds/Migration/14项测试**）→ `V3-05` Swift 领域规则引擎（**未开始**）→ `V3-06` GRDB Repository & 媒体安全存储（**未开始**） | **进行中（数据库层已通过本机 `sqlite3` 验证）** | [Schema 设计与 ER](file:///home/xianggujiang/projects/BeautyBox/docs/db/SQLite_Schema_V1_设计说明与ER关系.md)、[字段字典](file:///home/xianggujiang/projects/BeautyBox/docs/db/SQLite_Schema_V1_字段字典.md)、[测试报告](file:///home/xianggujiang/projects/BeautyBox/docs/db/SQLite_Schema_V1_测试说明.md)；Swift/GRDB 仍标「需 Mac 实测」 |
 | **Phase 3（待启动）** | `V3-07`～`V3-13` iOS 原生五 Tab UI 工程落地 | **未开始** | 严格复用 `V3-05/V3-06`，UI 层零日期/金额/回收站孤立逻辑 |
 | **Phase 4（待启动）** | `V3-14`～`V3-20` 备份恢复、白名单图片分享、StoreKit 2 会员、Mac/Xcode 真机编译与 TestFlight 发布 | **未开始（高度依赖 Mac/Xcode）** | 备份/恢复/导出对全部用户永久免费 |
 
@@ -23,17 +23,16 @@
 
 ## 二、后续开发任务清单与依赖链（V3-03 ～ V3-20）
 
-### 阶段 A：工程隔离与原生数据基石（严格顺序串行，禁跨步）
-1. **`V3-03`：原型冻结隔离与原生工程骨架准备**
-   - **前置条件**：已满足（V3.1 规则基线冻结）。
-   - **执行要求**：保持 `prototype/`、`v0.2-task02.1-frozen` 与 `f6752ac` 不可变；确立 `ios/` 与原型物理目录隔离，仅按用户明确指示处理分支合并或远端推送。
-2. **`V3-04`：SQLite Schema V1、147 节点三级分类种子与 Migration 引擎**
-   - **前置条件**：**已全部满足（见 [SQLite 设计前置清单第三节](file:///home/xianggujiang/projects/BeautyBox/docs/BeautyBox_SQLite数据库设计前置清单.md) 9 项门禁）**。
-   - **交付与本机必测要求**：
-     - 建表 DDL（21 张业务驱动本地核心表）；
-     - 9 一级 / 45 二级 / 93 三级预设分类种子；
-     - 五类历史分类迁移映射器 & `idle` 三分支证据分流审计迁移器；
-     - 在当前 Linux 环境使用 `sqlite3 3.45.1` + `python3` 跑通 20 项边界自动化测试（含 7 天回收站 `cascade_with_product` 防误复活、单盒美瞳 `lens_power`/`lens_eye_side` 隔离、彻删清理 `product_usage_logs` + `ON DELETE SET NULL` 护快照、四表照片引用归零 GC 等）。
+### 阶段 A：工程隔离与原生数据基石（`V3-03`/`V3-04` 已完成，待推进 `V3-05`/`V3-06`）
+1. **`V3-03`：原型冻结隔离与独立目录建立（`已完成`）**
+   - **产出**：确立顶层 `database/` 与未来 `ios/` 原生工作目录物理隔离于 `prototype/`；`v0.2-task02.1-frozen` 与 `f6752ac` 保持零改写。
+2. **`V3-04`：SQLite Schema V1、147 节点三级分类种子与 Migration 引擎（`已完成本机 SQLite 实施与测试`）**
+   - **已落地产出**：
+     - [0001_schema_v1.sql](file:///home/xianggujiang/projects/BeautyBox/database/migrations/0001_schema_v1.sql)（22 张真实表、外键/`ON DELETE`/`CHECK`/部分唯一索引、零 `REAL`/`FLOAT`）；
+     - [0001_categories_v1.sql](file:///home/xianggujiang/projects/BeautyBox/database/seeds/0001_categories_v1.sql)（9 一级 / 45 二级 / 93 三级预设分类 + 默认设置）；
+     - [beautybox_db.py](file:///home/xianggujiang/projects/BeautyBox/database/python/beautybox_db.py)（事务化 Migration、7 天回收站批次隔离/彻删/引用归零、五类分类迁移与 `idle` 三分支兼容）；
+     - [test_schema_v1.py](file:///home/xianggujiang/projects/BeautyBox/database/tests/test_schema_v1.py)（**14/14 自动化测试通过** + 原生 `sqlite3` CLI `foreign_key_check` 通过）。
+   - **尚未验证边界**：Swift `GRDB` 打包挂载及 iOS 沙盒实测归属 `V3-06` 及 Mac/Xcode 真机验证。
 3. **`V3-05`：Swift 核心领域模型与规则引擎（纯逻辑可跨平台单测层）**
    - **前置依赖**：依赖 `V3-04` 字段字典定型，实现 M1～M10 规则（`is_custom_name`、9+2 状态机与独立重置、美瞳 `replacement_cycle_code` 单源分组、4 层日期引擎与 `min()`、多币种 Decimal 精度）。
 4. **`V3-06`：GRDB Repository 持久层与 `MediaStore` 沙盒媒体引擎**
